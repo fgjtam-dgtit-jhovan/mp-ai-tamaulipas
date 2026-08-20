@@ -100,8 +100,8 @@ defineProps<{
                     </div>
 
                     <h1 class="main-title">
-                        Ministerio Público
-                        <span>IA</span>
+                        MP - AI
+                        <span></span>
                     </h1>
 
                     <p class="main-description">
