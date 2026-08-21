@@ -1,45 +1,60 @@
+# app/services/llm_service.py
+import os
 import json
+import httpx
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from fastapi import HTTPException
+
+OLLAMA_URL = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+
+class ElementStatus(BaseModel):
+    element_id: int
+    status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
+    evidence_found: Optional[str] = Field(None, description="Cita breve si está ACREDITADO")
+    missing_reason: Optional[str] = Field(None, description="Solo llenar si el status es FALTANTE")
+
+class ObjectivityAudit(BaseModel):
+    cargo_elements: List[str]
+    descargo_elements: List[str]
+    bias_warning: Optional[str] = None
+
+class SuggestedDiligence(BaseModel):
+    action: str
+    legal_basis: str
+    purpose: str
+
+class AnalysisSchema(BaseModel):
+    elements_analysis: List[ElementStatus]
+    objectivity_audit: ObjectivityAudit
+    suggested_diligences: List[SuggestedDiligence]
+
 
 async def query_llm(system_prompt: str, user_prompt: str) -> str:
-    # Simulador de respuesta estructurada de Ollama/LLM
-    mock_response = {
-        "elements_analysis": [
-            {
-                "element_id": 1,
-                "status": "ACREDITADO",
-                "evidence_found": "El sujeto tomó la computadora portátil del escritorio del denunciante.",
-                "missing_reason": None
-            },
-            {
-                "element_id": 2,
-                "status": "ACREDITADO",
-                "evidence_found": "Una computadora portátil HP negra.",
-                "missing_reason": None
-            },
-            {
-                "element_id": 3,
-                "status": "ACREDITADO",
-                "evidence_found": "Factura número 45892 a nombre de la víctima.",
-                "missing_reason": None
-            },
-            {
-                "element_id": 4,
-                "status": "FALTANTE",
-                "evidence_found": None,
-                "missing_reason": "No consta en el expediente la entrevista formal de la víctima declarando la falta de autorización."
-            }
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ],
-        "objectivity_audit": {
-            "cargo_elements": ["Testigo señala ver al imputado salir con el equipo."],
-            "descargo_elements": ["El imputado afirma que el equipo le fue prestado temporalmente."],
-            "bias_warning": "Se debe corroborar si existía un acuerdo previo de préstamo antes de determinar la intención de apoderamiento."
-        },
-        "suggested_diligences": [
-            {
-                "action": "Recabar entrevista ampliatoria de la víctima respecto al consentimiento.",
-                "legal_basis": "Art. 399 Código Penal",
-                "purpose": "Acreditar el elemento subjetivo de falta de consentimiento."
-            }
-        ]
+        "format": AnalysisSchema.model_json_schema(),
+        "stream": False
     }
-    return json.dumps(mock_response)
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            return result["message"]["content"]
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502, 
+            detail=f"Error en Ollama ({exc.response.status_code}): {exc.response.text}"
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Error de conexión con Ollama en {OLLAMA_URL}: {str(exc)}"
+        )

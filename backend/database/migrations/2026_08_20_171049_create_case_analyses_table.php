@@ -24,7 +24,7 @@ return new class extends Migration
             $table->json('objectivity_audit')->nullable();    // Auditoría de Cargo vs. Descargo
             $table->json('suggested_diligences')->nullable(); // Diligencias recomendadas con artículo
 
-            $table->enum('status', ['draft', 'approved', 'rejected'])->default('draft');
+            $table->enum('status', ['draft', 'reviewed', 'approved', 'rejected'])->default('draft');
             $table->timestamps();
         });
     }
