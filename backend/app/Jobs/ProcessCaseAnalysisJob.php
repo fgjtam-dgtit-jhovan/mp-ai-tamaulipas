@@ -63,7 +63,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
     private function userMessage(Throwable $exception): string
     {
-        if ($exception instanceof \InvalidArgumentException) {
+        if ($exception instanceof \InvalidArgumentException || $exception instanceof \UnexpectedValueException) {
             return 'El servicio de inteligencia artificial no está configurado. Contacta al administrador.';
         }
 

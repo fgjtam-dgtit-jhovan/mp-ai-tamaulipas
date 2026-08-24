@@ -2,7 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
@@ -18,7 +17,9 @@ class DatabaseSeeder extends Seeder
         $this->call([
             LegalCoreLevel1Seeder::class,  // Crea los documentos base
             RoboSimplePilotSeeder::class,  // Carga el delito piloto
-            OffenseElementsSeeder::class,         // Carga los delitos
+            OffenseElementsSeeder::class,         // Carga los delito
+            LesionesArticlesSeeder::class,        // Carga los artículos de lesiones
+            LesionesOffenseElementsSeeder::class, // Carga los elementos de lesiones
         ]);
     }
 }

@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Models\LegalArticle;
+use App\Models\Ms\Crime;
+use App\Models\OffenseElement;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -16,14 +19,44 @@ class CaseAnalysisService
         }
 
         Log::info("Iniciando análisis para el caso: {$externalCaseId} con delito: {$externalOffenseId}");
+        $elements = OffenseElement::with(['legalArticle.version.document'])
+            ->where('external_offense_id', $externalOffenseId)
+            ->orderBy('display_order')
+            ->get();
+
+        if ($elements->isEmpty()) {
+            throw new \UnexpectedValueException('El delito no tiene elementos jurídicos configurados.');
+        }
+
+        $crime = Crime::on('sqlsrv')->find($externalOffenseId);
+
         $response = Http::timeout(300)->post("{$baseUrl}/api/v1/analyze-case", [
             'external_case_id' => $externalCaseId,
             'external_offense_id' => $externalOffenseId,
+            'offense_name' => $crime?->DLTO,
             'fact_narrative' => $narrative,
+            'elements' => $elements->map(fn (OffenseElement $element): array => [
+                'id' => $element->id,
+                'name' => $element->name,
+                'type' => $element->element_type,
+                'criteria' => $element->verification_criteria,
+                'required' => $element->is_required,
+                'legal_article' => $element->legalArticle?->citation,
+            ])->values()->all(),
+            'legal_articles' => $elements->pluck('legalArticle')->filter()->unique('id')->map(fn (LegalArticle $article): array => [
+                'id' => $article->id,
+                'article' => $article->article_number,
+                'fraction' => $article->fraction,
+                'content' => $article->content,
+                'citation' => $article->citation,
+            ])->values()->all(),
         ]);
 
         if ($response->failed()) {
-            throw new \RuntimeException('Error al procesar el análisis con MP-IA Engine: '.$response->status());
+            $detail = $response->json('detail');
+            $detail = is_array($detail) ? ($detail['error'] ?? $detail['message'] ?? json_encode($detail)) : $detail;
+
+            throw new \RuntimeException('Error al procesar el análisis con MP-IA Engine ('.$response->status().'): '.$detail);
         }
 
         $data = $response->json('data');

@@ -80,6 +80,14 @@ services:
     container_name: mpia_ai_service
     restart: unless-stopped
     env_file: .env
+    environment:
+      AI_DB_HOST: postgres
+      AI_DB_PORT: 5432
+      AI_DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
+      AI_DB_USERNAME: ${POSTGRES_USER:-mpia}
+      AI_DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
     ports:
       - "8001:8000"
     depends_on:

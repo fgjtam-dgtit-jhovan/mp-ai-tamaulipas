@@ -2,8 +2,8 @@ packages:
   - '.'
 
 allowBuilds:
-  unrs-resolver: set this to true or false
-  vue-demi: set this to true or false
+  unrs-resolver: true
+  vue-demi: true
 
 publicHoistPattern:
   - '@inertiajs/core'

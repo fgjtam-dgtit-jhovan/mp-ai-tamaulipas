@@ -1,47 +1,52 @@
-# app/services/analyzer_service.py
 import json
-import httpx
-from app.services.qdrant_service import search_legal_articles
+
 from app.services.llm_service import query_llm
+from app.services.qdrant_service import search_legal_articles
 
-async def analyze_case_file(case_id: str, offense_id: int, narrative: str):
-    # 1. Obtener los elementos constitutivos desde Laravel (ejemplo vía HTTP interno o DB)
-    # Por ahora simulamos la lectura de los elementos creados en tu Seeder (Robo Simple)
-    elements_criteria = [
-        {"id": 1, "name": "Apoderamiento", "criteria": "Acción de remoción o sustracción del bien"},
-        {"id": 2, "name": "Cosa Mueble", "criteria": "Objeto material tangible trasladable"},
-        {"id": 3, "name": "Ajenuidad", "criteria": "Acreditación de titularidad de un tercero"},
-        {"id": 4, "name": "Falta de Consentimiento", "criteria": "Declaración o indicio de falta de autorización"}
-    ]
 
-    # 2. Consultar RAG Jurídico en Qdrant
-    legal_context = await search_legal_articles(query=narrative, limit=3)
+async def analyze_case_file(
+    case_id: str,
+    offense_id: int,
+    narrative: str,
+    offense_name: str | None,
+    elements: list,
+    legal_articles: list,
+):
+    if not elements:
+        raise ValueError(f'El delito {offense_id} no tiene elementos jurídicos configurados.')
 
-    # 3. Construir Prompt de Estricta Verificación
-    system_prompt = """
+    legal_context = await search_legal_articles(query=narrative, offense_id=offense_id, limit=5)
+
+    system_prompt = '''
     Eres un Asistente de Auditoría Jurídica para el Ministerio Público (MP-IA).
-    Tu tarea es evaluar la narrativa de hechos únicamente contra los elementos constitutivos proporcionados.
-    NO inventes hechos. Si falta información para acreditar un elemento, márcalo explícitamente como "FALTANTE".
+    Evalúa la narrativa únicamente contra los elementos y artículos proporcionados.
+    No inventes hechos, normas, artículos ni evidencias. Si falta información, marca el elemento como FALTANTE.
     Responde ÚNICAMENTE en formato JSON válido.
-    """
+    '''
 
-    user_prompt = f"""
+    user_prompt = f'''
     HECHOS DE LA CARPETA:
     "{narrative}"
 
-    MARCO JURÍDICO RELEVANTE:
-    {legal_context}
+    DELITO:
+    {offense_name or f"ID {offense_id}"}
 
-    ELEMENTOS A EVALUAR:
-    {json.dumps(elements_criteria, ensure_ascii=False)}
+    MARCO JURÍDICO RECUPERADO DE QDRANT:
+    {json.dumps(legal_context, ensure_ascii=False)}
 
-    Genera un JSON con la siguiente estructura exacta:
+    ELEMENTOS A EVALUAR (fuente jurídica de PostgreSQL):
+    {json.dumps(elements, ensure_ascii=False)}
+
+    ARTÍCULOS ASOCIADOS:
+    {json.dumps(legal_articles, ensure_ascii=False)}
+
+    Genera exactamente esta estructura:
     {{
       "elements_analysis": [
         {{
-          "element_id": 1,
+          "element_id": "ID del elemento recibido",
           "status": "ACREDITADO|FALTANTE|CONTRADICTORIO",
-          "evidence_found": "Texto breve o cita de los hechos",
+          "evidence_found": "Texto breve o cita literal de los hechos",
           "missing_reason": "Razón si está faltante"
         }}
       ],
@@ -53,13 +58,12 @@ async def analyze_case_file(case_id: str, offense_id: int, narrative: str):
       "suggested_diligences": [
         {{
           "action": "Diligencia a solicitar",
-          "legal_basis": "Fundamento legal obtenido del RAG",
+          "legal_basis": "Fundamento legal recuperado",
           "purpose": "Elemento que busca acreditar"
         }}
       ]
     }}
-    """
+    '''
 
-    # 4. Invocación al LLM
     response_json = await query_llm(system_prompt, user_prompt)
     return json.loads(response_json)
