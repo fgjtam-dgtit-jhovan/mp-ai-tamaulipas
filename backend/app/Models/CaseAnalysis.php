@@ -17,6 +17,7 @@ class CaseAnalysis extends Model
         'objectivity_audit',
         'suggested_diligences',
         'status',
+        'error_message',
     ];
 
     protected $casts = [
@@ -33,8 +34,3 @@ class CaseAnalysis extends Model
         return $this->belongsTo(User::class);
     }
 }
-
-
-
-
-

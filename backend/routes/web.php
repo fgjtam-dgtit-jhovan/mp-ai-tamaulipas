@@ -8,6 +8,7 @@ Route::inertia('/', 'auth/Login')->name('home');
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::inertia('dashboard', 'Dashboard')->name('dashboard');
+    Route::get('/case-analysis', [CaseAnalysisController::class, 'index'])->name('case-analysis.index');
     Route::get('/case-analysis/{id}', [CaseAnalysisController::class, 'show'])->name('case-analysis.show');
     Route::put('/case-analysis/{id}', [CaseAnalysisController::class, 'update'])->name('case-analysis.update');
     Route::get('/cases', [CaseController::class, 'index'])->name('cases.index');

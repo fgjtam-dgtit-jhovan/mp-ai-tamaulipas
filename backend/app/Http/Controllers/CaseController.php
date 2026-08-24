@@ -73,6 +73,15 @@ class CaseController extends Controller
 
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
 
+        $activeAnalysis = CaseAnalysis::where('external_case_id', $externalCaseId)
+            ->where('status', 'draft')
+            ->latest()
+            ->first();
+
+        if ($activeAnalysis) {
+            return back()->withErrors(['analysis' => 'Esta carpeta ya tiene un análisis en proceso. Espera a que termine.']);
+        }
+
         $crime = Crime::where('DLTO', $caseData['DELITO'])->first();
 
         if (! $crime) {
@@ -83,8 +92,9 @@ class CaseController extends Controller
             'external_case_id' => $externalCaseId,
             'external_offense_id' => $crime->ID_DLTO,
             'user_id' => Auth::id() ?? 1,
-                'facts_breakdown' => ['narrative' => $caseData['DESCRIPCION_HECHOS']],
+            'facts_breakdown' => ['narrative' => $caseData['DESCRIPCION_HECHOS'] ?? ''],
             'status' => 'draft',
+            'error_message' => null,
         ]);
 
         ProcessCaseAnalysisJob::dispatch($analysis, $caseData['DESCRIPCION_HECHOS']);

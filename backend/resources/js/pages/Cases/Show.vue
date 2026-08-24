@@ -1,4 +1,19 @@
 <script setup>
+import CaseAnalysisShow from '../CaseAnalysis/Show.vue';
+
+defineProps({
+    caseData: { type: Object, default: null },
+    latestAnalysis: { type: Object, default: null },
+});
+</script>
+
+<template>
+    <CaseAnalysisShow
+        :case-data="caseData"
+        :latest-analysis="latestAnalysis"
+    />
+</template>
+<script setup>
 import { onMounted, onUnmounted } from 'vue';
 import { useForm, router, Link } from '@inertiajs/vue3';
 

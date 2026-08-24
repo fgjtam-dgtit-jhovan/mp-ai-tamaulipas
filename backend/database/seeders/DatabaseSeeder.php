@@ -18,6 +18,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             LegalCoreLevel1Seeder::class,  // Crea los documentos base
             RoboSimplePilotSeeder::class,  // Carga el delito piloto
+            OffenseElementsSeeder::class,         // Carga los delitos
         ]);
     }
 }

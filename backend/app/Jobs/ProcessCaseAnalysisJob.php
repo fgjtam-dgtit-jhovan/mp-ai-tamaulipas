@@ -15,9 +15,14 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 2;
+    public int $tries = 3;
 
-    public int $timeout = 200;
+    public int $timeout = 330;
+
+    public function backoff(): array
+    {
+        return [10, 30];
+    }
 
     public function __construct(
         public CaseAnalysis $analysis,
@@ -35,20 +40,37 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
             $data = $response;
 
-            // Guardamos directamente en tus columnas existentes
             $this->analysis->update([
                 'elements_status' => $data['elements_analysis'] ?? [],
                 'objectivity_audit' => $data['objectivity_audit'] ?? [],
                 'suggested_diligences' => $data['suggested_diligences'] ?? [],
                 'status' => 'reviewed',
+                'error_message' => null,
             ]);
 
         } catch (Throwable $e) {
-            $this->analysis->update([
-                'status' => 'rejected',
-            ]);
-
             throw $e;
         }
+    }
+
+    public function failed(Throwable $exception): void
+    {
+        $this->analysis->update([
+            'status' => 'rejected',
+            'error_message' => $this->userMessage($exception),
+        ]);
+    }
+
+    private function userMessage(Throwable $exception): string
+    {
+        if ($exception instanceof \InvalidArgumentException) {
+            return 'El servicio de inteligencia artificial no está configurado. Contacta al administrador.';
+        }
+
+        if (str_contains($exception->getMessage(), 'MP-IA Engine')) {
+            return 'El servicio de inteligencia artificial no respondió correctamente después de varios intentos.';
+        }
+
+        return 'No fue posible completar el análisis. Intenta nuevamente o contacta al administrador.';
     }
 }
