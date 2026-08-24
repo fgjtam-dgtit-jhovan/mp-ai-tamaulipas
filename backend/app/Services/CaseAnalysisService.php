@@ -56,6 +56,10 @@ class CaseAnalysisService
             $detail = $response->json('detail');
             $detail = is_array($detail) ? ($detail['error'] ?? $detail['message'] ?? json_encode($detail)) : $detail;
 
+            if (is_string($detail) && str_contains($detail, 'No hay artículos jurídicos')) {
+                throw new \UnexpectedValueException($detail);
+            }
+
             throw new \RuntimeException('Error al procesar el análisis con MP-IA Engine ('.$response->status().'): '.$detail);
         }
 

@@ -71,7 +71,7 @@ class CaseController extends Controller
             return back()->withErrors(['expediente' => 'No se encontró la carpeta para analizar.']);
         }
 
-        $externalCaseId = "{$caseData['ID_CARPETA']}";
+        $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
 
         $activeAnalysis = CaseAnalysis::where('external_case_id', $externalCaseId)
             ->where('status', 'draft')

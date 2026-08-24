@@ -48,6 +48,13 @@ class ProcessCaseAnalysisJob implements ShouldQueue
                 'error_message' => null,
             ]);
 
+        } catch (\UnexpectedValueException|\InvalidArgumentException $exception) {
+            $this->analysis->update([
+                'status' => 'rejected',
+                'error_message' => $exception->getMessage(),
+            ]);
+
+            return;
         } catch (Throwable $e) {
             throw $e;
         }
@@ -63,7 +70,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
     private function userMessage(Throwable $exception): string
     {
-        if ($exception instanceof \InvalidArgumentException || $exception instanceof \UnexpectedValueException) {
+        if ($exception instanceof \InvalidArgumentException) {
             return 'El servicio de inteligencia artificial no está configurado. Contacta al administrador.';
         }
 
