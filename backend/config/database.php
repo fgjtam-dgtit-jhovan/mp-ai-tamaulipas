@@ -119,8 +119,8 @@ return [
                 // NO usar PDO::ATTR_TIMEOUT o PDO::SQLSRV_ATTR_QUERY_TIMEOUT aquí
                 // porque pueden causar errores
             ],
-            // 'encrypt' => env('DB_ENCRYPT', 'yes'),
-            // 'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'false'),
+            'encrypt' => env('DB_ENCRYPT', 'no'),
+            'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'true'),
         ],
 
     ],

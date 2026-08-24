@@ -23,5 +23,11 @@ class DashboardTest extends TestCase
 
         $response = $this->get(route('dashboard'));
         $response->assertOk();
+        $response->assertInertia(fn ($page) => $page
+            ->component('Dashboard')
+            ->has('folders', 4)
+            ->where('folders.0.case_number', 'C-2025-001')
+            ->where('folders.0.title', 'Delito de fraude electrónico')
+        );
     }
 }

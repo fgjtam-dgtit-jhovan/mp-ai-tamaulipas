@@ -16,6 +16,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 2;
+
     public int $timeout = 200;
 
     public function __construct(
@@ -32,14 +33,14 @@ class ProcessCaseAnalysisJob implements ShouldQueue
                 $this->factNarrative
             );
 
-            $data = $response['data'] ?? [];
+            $data = $response;
 
             // Guardamos directamente en tus columnas existentes
             $this->analysis->update([
-                'elements_status'      => $data['elements_analysis'] ?? [],
-                'objectivity_audit'    => $data['objectivity_audit'] ?? [],
+                'elements_status' => $data['elements_analysis'] ?? [],
+                'objectivity_audit' => $data['objectivity_audit'] ?? [],
                 'suggested_diligences' => $data['suggested_diligences'] ?? [],
-                'status'               => 'reviewed',
+                'status' => 'reviewed',
             ]);
 
         } catch (Throwable $e) {

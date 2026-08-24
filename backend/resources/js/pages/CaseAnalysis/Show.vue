@@ -1,250 +1,118 @@
 <script setup>
-import { ref } from 'vue';
-import { Head, router } from '@inertiajs/vue3';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
+import { AlertCircle, ArrowLeft, BrainCircuit, CheckCircle2, FileText, LoaderCircle, Sparkles } from '@lucide/vue';
 
 const props = defineProps({
-  analysis: {
-    type: Object,
-    required: true
-  }
+    analysis: { type: Object, default: null },
+    caseData: { type: Object, default: null },
+    latestAnalysis: { type: Object, default: null },
 });
 
-// Reactividad para decisiones del usuario (Human-in-the-Loop)
-const elements = ref(JSON.parse(JSON.stringify(props.analysis.elements_status || [])));
-const diligences = ref(
-  (props.analysis.suggested_diligences || []).map(d => ({ ...d, accepted: d.accepted ?? true }))
-);
+const currentAnalysis = computed(() => props.latestAnalysis || props.analysis);
+const form = useForm({
+    expediente: props.caseData?.EXPEDIENTE || '',
+    id_carpeta: props.caseData?.ID_CARPETA || '',
+});
 const isSaving = ref(false);
+const elements = ref([]);
+const diligences = ref([]);
+let pollInterval = null;
 
-const updateElementStatus = (index, newStatus) => {
-  elements.value[index].status = newStatus;
+const isProcessing = computed(() => currentAnalysis.value?.status === 'draft');
+const hasResults = computed(() => currentAnalysis.value && !isProcessing.value);
+
+const stopPolling = () => {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
 };
 
-const toggleDiligence = (index) => {
-  diligences.value[index].accepted = !diligences.value[index].accepted;
+const startPolling = () => {
+    if (pollInterval || !props.caseData) return;
+
+    pollInterval = setInterval(() => {
+        router.reload({
+            only: ['latestAnalysis'],
+            preserveScroll: true,
+            onSuccess: () => {
+                if (currentAnalysis.value && !isProcessing.value) stopPolling();
+            },
+        });
+    }, 3000);
 };
+
+const triggerAnalysis = () => {
+    form.post(route('cases.analyze'), { preserveScroll: true, onSuccess: startPolling });
+};
+
+const syncReview = () => {
+    elements.value = JSON.parse(JSON.stringify(currentAnalysis.value?.elements_status || []));
+    diligences.value = (currentAnalysis.value?.suggested_diligences || []).map((item) => ({ ...item, accepted: item.accepted ?? true }));
+};
+
+const updateElementStatus = (index, status) => { elements.value[index].status = status; };
+const toggleDiligence = (index) => { diligences.value[index].accepted = !diligences.value[index].accepted; };
 
 const saveHumanReview = () => {
-  isSaving.value = true;
-  router.put(`/case-analysis/${props.analysis.id}`, {
-    elements_status: elements.value,
-    suggested_diligences: diligences.value,
-    status: 'reviewed'
-  }, {
-    onFinish: () => { isSaving.value = false; }
-  });
+    isSaving.value = true;
+    router.put(route('case-analysis.update', currentAnalysis.value.id), {
+        elements_status: elements.value,
+        suggested_diligences: diligences.value,
+        status: 'reviewed',
+    }, { onFinish: () => { isSaving.value = false; } });
 };
 
-const getStatusBadge = (status) => {
-  switch (status) {
-    case 'ACREDITADO':
-      return 'bg-emerald-100 text-emerald-800 border-emerald-300';
-    case 'FALTANTE':
-      return 'bg-amber-100 text-amber-800 border-amber-300';
-    case 'CONTRADICTORIO':
-      return 'bg-rose-100 text-rose-800 border-rose-300';
-    default:
-      return 'bg-slate-100 text-slate-800 border-slate-300';
-  }
-};
+const getStatusBadge = (status) => ({
+    ACREDITADO: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    FALTANTE: 'bg-amber-50 text-amber-700 border-amber-200',
+    CONTRADICTORIO: 'bg-rose-50 text-rose-700 border-rose-200',
+}[status] || 'bg-slate-50 text-slate-600 border-slate-200');
+
+onMounted(() => {
+    syncReview();
+    if (isProcessing.value) startPolling();
+});
+onUnmounted(stopPolling);
+watch(currentAnalysis, syncReview);
 </script>
 
 <template>
-  <Head title="Análisis de Carpeta - MP-IA" />
+    <Head title="Análisis de Carpeta | MP-IA" />
+    <main class="min-h-screen bg-[#f4f7f6] text-slate-900">
+        <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <Link :href="route('cases.index', { expediente: caseData?.EXPEDIENTE })" class="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-slate-500 transition hover:text-emerald-700"><ArrowLeft class="size-4" /> Regresar a resultados</Link>
 
-  <div class="min-h-screen bg-slate-50 p-6 font-sans">
-    <div class="max-w-7xl mx-auto space-y-6">
-
-      <!-- Encabezado del Expediente -->
-      <header class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex justify-between items-center">
-        <div>
-          <div class="flex items-center space-x-3">
-            <span class="px-3 py-1 bg-indigo-50 text-indigo-700 text-xs font-semibold rounded-full uppercase tracking-wider">
-              Carpeta de Investigación
-            </span>
-            <span class="text-xs text-slate-400">ID Local: #{{ analysis.id }}</span>
-          </div>
-          <h1 class="text-2xl font-bold text-slate-900 mt-1">
-            {{ analysis.external_case_id }}
-          </h1>
-          <p class="text-sm text-slate-500 mt-0.5">
-            Clave de Delito: <span class="font-medium text-slate-700">{{ analysis.external_offense_id }}</span>
-          </p>
-        </div>
-
-        <div class="flex items-center space-x-3">
-          <span
-            class="px-3 py-1.5 text-sm font-medium rounded-lg border uppercase"
-            :class="analysis.status === 'draft' ? 'bg-slate-100 border-slate-300 text-slate-700' : 'bg-emerald-50 border-emerald-200 text-emerald-700'"
-          >
-            Estado: {{ analysis.status }}
-          </span>
-        </div>
-      </header>
-
-      <!-- Resumen Narrativo de Hechos -->
-      <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 class="text-lg font-semibold text-slate-800 mb-2">Narrativa de los Hechos</h2>
-        <p class="text-sm text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-lg border border-slate-100">
-          {{ analysis.facts_breakdown?.narrative || 'Sin narrativa registrada.' }}
-        </p>
-      </section>
-
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        <!-- Columna Izquierda (2 Cols): Matriz de Tipicidad & Diligencias -->
-        <div class="lg:col-span-2 space-y-6">
-
-          <!-- Matriz de Tipicidad (Semáforos e Interacción) -->
-          <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <div class="flex justify-between items-center mb-4">
-              <h2 class="text-lg font-semibold text-slate-800">
-                Matriz de Elementos del Tipo Penal
-              </h2>
-              <span class="text-xs text-slate-500">Evaluación del MP</span>
-            </div>
-
-            <div class="space-y-4">
-              <div
-                v-for="(elem, idx) in elements"
-                :key="elem.element_id"
-                class="p-4 rounded-lg border bg-white space-y-3"
-                :class="elem.status === 'ACREDITADO' ? 'border-slate-200' : 'border-amber-200 bg-amber-50/20'"
-              >
-                <div class="flex justify-between items-start">
-                  <span class="text-sm font-bold text-slate-800">
-                    Elemento Constitutivo #{{ elem.element_id }}
-                  </span>
-                  <span class="px-2.5 py-0.5 text-xs font-bold rounded-md border uppercase" :class="getStatusBadge(elem.status)">
-                    {{ elem.status }}
-                  </span>
+            <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div class="border-b border-slate-100 bg-slate-900 px-6 py-7 text-white sm:px-8">
+                    <div class="flex flex-col justify-between gap-6 md:flex-row md:items-start">
+                        <div>
+                            <div class="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-emerald-300"><span class="rounded-full bg-emerald-400/10 px-3 py-1">Carpeta de investigación</span><span v-if="caseData">{{ caseData.TIPO }} #{{ caseData.ID_CARPETA }}</span></div>
+                            <h1 class="text-2xl font-bold tracking-tight sm:text-3xl">{{ caseData?.EXPEDIENTE || currentAnalysis?.external_case_id }}</h1>
+                            <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-300">{{ caseData?.DELITO || 'Análisis jurídico asistido por inteligencia artificial' }}<span v-if="caseData?.MODALIDAD"> · {{ caseData.MODALIDAD }}</span><span v-if="caseData?.MUNICIPIO"> · {{ caseData.MUNICIPIO }}</span></p>
+                        </div>
+                        <button v-if="caseData && !isProcessing" type="button" :disabled="form.processing" @click="triggerAnalysis" class="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-bold text-slate-950 shadow-lg shadow-emerald-950/20 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"><Sparkles class="size-4" /> {{ currentAnalysis ? 'Reanalizar con IA' : 'Analizar con IA' }}</button>
+                    </div>
                 </div>
-
-                <p v-if="elem.evidence_found" class="text-xs text-slate-600">
-                  <strong class="text-slate-700">Evidencia:</strong> {{ elem.evidence_found }}
-                </p>
-
-                <p v-if="elem.missing_reason" class="text-xs text-amber-700">
-                  <strong>Observación / Faltante:</strong> {{ elem.missing_reason }}
-                </p>
-
-                <!-- Botonera de Ajuste Ministerial -->
-                <div class="flex items-center space-x-2 pt-2 border-t border-slate-100">
-                  <span class="text-xs text-slate-500 font-medium">Dictamen MP:</span>
-                  <button
-                    @click="updateElementStatus(idx, 'ACREDITADO')"
-                    :class="elem.status === 'ACREDITADO' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
-                    class="px-2 py-1 text-xs rounded transition font-medium"
-                  >
-                    Acreditar
-                  </button>
-                  <button
-                    @click="updateElementStatus(idx, 'FALTANTE')"
-                    :class="elem.status === 'FALTANTE' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
-                    class="px-2 py-1 text-xs rounded transition font-medium"
-                  >
-                    Faltante
-                  </button>
+                <div v-if="caseData" class="grid gap-6 p-6 sm:p-8 lg:grid-cols-[1fr_280px]">
+                    <div><div class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-800"><FileText class="size-4 text-emerald-600" /> Narrativa de los hechos</div><p class="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm leading-7 text-slate-600">{{ caseData.DESCRIPCION_HECHOS || 'Sin narrativa registrada.' }}</p></div>
+                    <div class="rounded-xl border border-slate-200 p-5"><p class="text-xs font-bold uppercase tracking-wider text-slate-400">Estado del expediente</p><p class="mt-2 text-lg font-bold text-slate-800">{{ caseData.ESTADO }}</p><p class="mt-4 text-xs text-slate-500">Unidad: <span class="font-semibold text-slate-700">{{ caseData.UNIDAD }}</span></p><p class="mt-1 text-xs text-slate-500">Municipio: <span class="font-semibold text-slate-700">{{ caseData.MUNICIPIO }}</span></p></div>
                 </div>
-              </div>
-            </div>
-          </section>
+            </section>
 
-          <!-- Diligencias Sugeridas e Selección -->
-          <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <h2 class="text-lg font-semibold text-slate-800 mb-4">
-              Diligencias e Investigaciones Recomendadas
-            </h2>
-
-            <div class="space-y-3">
-              <div
-                v-for="(dil, idx) in diligences"
-                :key="idx"
-                class="p-4 bg-indigo-50/50 rounded-lg border flex justify-between items-center transition"
-                :class="dil.accepted ? 'border-indigo-200' : 'border-slate-200 opacity-60'"
-              >
-                <div class="space-y-1">
-                  <span class="text-xs font-semibold text-indigo-600 uppercase">
-                    Fundamento: {{ dil.legal_basis }}
-                  </span>
-                  <h3 class="text-sm font-bold text-slate-800">{{ dil.action }}</h3>
-                  <p class="text-xs text-slate-600">Finalidad: {{ dil.purpose }}</p>
-                </div>
-
-                <button
-                  @click="toggleDiligence(idx)"
-                  :class="dil.accepted ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'"
-                  class="px-3 py-1.5 text-xs font-semibold rounded-lg transition"
-                >
-                  {{ dil.accepted ? 'Aprobada' : 'Descartada' }}
-                </button>
-              </div>
-            </div>
-
-            <!-- Botón Principal para Guardar la Revisión del MP -->
-            <div class="mt-6 flex justify-end">
-              <button
-                @click="saveHumanReview"
-                :disabled="isSaving"
-                class="px-5 py-2.5 bg-slate-900 text-white text-sm font-semibold rounded-lg shadow hover:bg-slate-800 transition disabled:opacity-50"
-              >
-                {{ isSaving ? 'Guardando...' : 'Confirmar y Guardar Revisión' }}
-              </button>
-            </div>
-          </section>
-
+            <Transition name="fade" mode="out-in">
+                <section v-if="isProcessing" key="processing" class="analysis-loader mt-6 overflow-hidden rounded-2xl border border-emerald-200 bg-white p-8 shadow-sm sm:p-12"><div class="mx-auto max-w-xl text-center"><div class="relative mx-auto mb-7 flex size-20 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><BrainCircuit class="size-9 animate-[pulse_2s_ease-in-out_infinite]" /><span class="absolute inset-0 animate-ping rounded-full border-2 border-emerald-300/50"></span></div><p class="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">MP-IA Engine en ejecución</p><h2 class="mt-3 text-2xl font-bold text-slate-900">Analizando la carpeta</h2><p class="mx-auto mt-3 max-w-md text-sm leading-6 text-slate-500">La IA está contrastando los hechos con los elementos del tipo penal. Los resultados aparecerán aquí automáticamente.</p><div class="mt-8 h-2 overflow-hidden rounded-full bg-slate-100"><div class="loader-bar h-full rounded-full bg-emerald-500"></div></div><div class="mt-4 flex items-center justify-center gap-2 text-xs font-semibold text-slate-400"><LoaderCircle class="size-4 animate-spin" /> Esto puede tardar unos minutos</div></div></section>
+                <section v-else-if="hasResults" key="results" class="mt-6 space-y-6"><div class="flex items-center justify-between"><div><p class="text-xs font-bold uppercase tracking-wider text-emerald-600">Resultado de la IA</p><h2 class="mt-1 text-2xl font-bold text-slate-900">Dictamen e integración legal</h2></div><span class="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700"><CheckCircle2 class="size-4" /> {{ currentAnalysis.status }}</span></div><div class="grid gap-6 lg:grid-cols-[1.35fr_1fr]"><div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 class="mb-5 text-lg font-bold">Elementos del tipo penal</h3><div class="space-y-4"><article v-for="(element, index) in elements" :key="element.element_id || index" class="rounded-xl border p-4" :class="element.status === 'ACREDITADO' ? 'border-slate-200' : 'border-amber-200 bg-amber-50/30'"><div class="flex items-start justify-between gap-3"><span class="text-sm font-bold">Elemento constitutivo #{{ element.element_id }}</span><span class="rounded-md border px-2 py-1 text-[10px] font-bold" :class="getStatusBadge(element.status)">{{ element.status }}</span></div><p v-if="element.evidence_found" class="mt-3 text-xs leading-5 text-slate-600"><b>Evidencia:</b> {{ element.evidence_found }}</p><p v-if="element.missing_reason" class="mt-2 text-xs leading-5 text-amber-700"><b>Observación:</b> {{ element.missing_reason }}</p><div class="mt-3 flex gap-2 border-t border-slate-100 pt-3"><button type="button" class="rounded px-2 py-1 text-xs font-semibold" :class="element.status === 'ACREDITADO' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'" @click="updateElementStatus(index, 'ACREDITADO')">Acreditar</button><button type="button" class="rounded px-2 py-1 text-xs font-semibold" :class="element.status === 'FALTANTE' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600'" @click="updateElementStatus(index, 'FALTANTE')">Faltante</button></div></article></div></div><div class="space-y-6"><div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 class="mb-4 text-lg font-bold">Auditoría de objetividad</h3><div v-if="currentAnalysis.objectivity_audit?.bias_warning" class="mb-4 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800"><AlertCircle class="size-4 shrink-0" />{{ currentAnalysis.objectivity_audit.bias_warning }}</div><h4 class="mb-2 text-xs font-bold uppercase tracking-wider text-emerald-700">Elementos de cargo</h4><ul class="space-y-2"><li v-for="(item, index) in currentAnalysis.objectivity_audit?.cargo_elements || []" :key="index" class="rounded border border-emerald-100 bg-emerald-50/60 p-2.5 text-xs text-slate-700">{{ item }}</li></ul><h4 class="mb-2 mt-5 text-xs font-bold uppercase tracking-wider text-sky-700">Elementos de descargo</h4><ul class="space-y-2"><li v-for="(item, index) in currentAnalysis.objectivity_audit?.descargo_elements || []" :key="index" class="rounded border border-sky-100 bg-sky-50/60 p-2.5 text-xs text-slate-700">{{ item }}</li></ul></div><div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 class="mb-4 text-lg font-bold">Diligencias sugeridas</h3><div class="space-y-3"><div v-for="(diligence, index) in diligences" :key="index" class="rounded-lg border p-3" :class="diligence.accepted ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200 opacity-60'"><div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase text-emerald-700">{{ diligence.legal_basis }}</p><p class="mt-1 text-xs font-bold text-slate-800">{{ diligence.action }}</p><p class="mt-1 text-xs text-slate-500">{{ diligence.purpose }}</p></div><button type="button" class="shrink-0 rounded px-2 py-1 text-[10px] font-bold" :class="diligence.accepted ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'" @click="toggleDiligence(index)">{{ diligence.accepted ? 'Aprobada' : 'Descartada' }}</button></div></div></div><button type="button" :disabled="isSaving" class="mt-5 w-full rounded-lg bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:opacity-50" @click="saveHumanReview">{{ isSaving ? 'Guardando...' : 'Confirmar revisión ministerial' }}</button></div></div></div></section>
+                <section v-else key="empty" class="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"><Sparkles class="mx-auto size-8 text-emerald-500" /><h2 class="mt-3 text-lg font-bold">Listo para analizar</h2><p class="mt-2 text-sm text-slate-500">Presiona “Analizar con IA” para obtener la matriz jurídica y las diligencias recomendadas.</p></section>
+            </Transition>
         </div>
-
-        <!-- Columna Derecha (1 Col): Auditoría de Objetividad (Cargo vs Descargo) -->
-        <div class="space-y-6">
-          <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <h2 class="text-lg font-semibold text-slate-800 mb-4">
-              Auditoría de Objetividad
-            </h2>
-
-            <!-- Alerta de Sesgo -->
-            <div v-if="analysis.objectivity_audit?.bias_warning" class="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-lg">
-              <p class="text-xs text-amber-800 leading-relaxed font-medium">
-                ⚠️ {{ analysis.objectivity_audit.bias_warning }}
-              </p>
-            </div>
-
-            <!-- Datos de Cargo -->
-            <div class="mb-4">
-              <h3 class="text-xs font-bold text-emerald-700 uppercase tracking-wider mb-2">
-                Elementos de Cargo (Incriminatorios)
-              </h3>
-              <ul class="space-y-1.5">
-                <li
-                  v-for="(item, idx) in analysis.objectivity_audit?.cargo_elements"
-                  :key="idx"
-                  class="text-xs text-slate-700 bg-emerald-50/60 p-2.5 rounded border border-emerald-100"
-                >
-                  • {{ item }}
-                </li>
-              </ul>
-            </div>
-
-            <!-- Datos de Descargo -->
-            <div>
-              <h3 class="text-xs font-bold text-sky-700 uppercase tracking-wider mb-2">
-                Elementos de Descargo (Defensa / Eximentes)
-              </h3>
-              <ul class="space-y-1.5">
-                <li
-                  v-for="(item, idx) in analysis.objectivity_audit?.descargo_elements"
-                  :key="idx"
-                  class="text-xs text-slate-700 bg-sky-50/60 p-2.5 rounded border border-sky-100"
-                >
-                  • {{ item }}
-                </li>
-              </ul>
-            </div>
-          </section>
-        </div>
-
-      </div>
-
-    </div>
-  </div>
+    </main>
 </template>
+
+<style scoped>
+.fade-enter-active, .fade-leave-active { transition: opacity 0.35s ease, transform 0.35s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(8px); }
+.loader-bar { width: 45%; animation: loading 2.4s ease-in-out infinite; }
+@keyframes loading { 0% { transform: translateX(-110%); } 60%, 100% { transform: translateX(230%); } }
+</style>
