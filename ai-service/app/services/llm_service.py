@@ -9,20 +9,17 @@ from pydantic import BaseModel, Field
 
 OLLAMA_URL = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 
-# IMPORTANTE: "llama3.2" a secas suele resolver a la variante de 3B —
-# insuficiente para razonamiento jurídico multi-restricción. Usa un
-# modelo más capaz por default y confirma que OLLAMA_MODEL en tu .env
-# apunte a lo que realmente descargaste con `ollama pull`.
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:14b"
+# IMPORTANTE: "llama3.2" a secas suele resolver a la variante de 3B.
+# Confirma que OLLAMA_MODEL en tu .env apunte a lo que realmente
+# descargaste con `ollama pull` (ahora mismo: qwen2.5:3b-instruct).
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:3b-instruct"
 
-# Contexto más amplio: narrativa + legal_context (RAG) + elements +
-# legal_articles + prompts fácilmente pasan de 4096 tokens. Si tu
-# hardware no soporta 8192 con este modelo, baja a un modelo más chico
-# ANTES de bajar num_ctx — la verdad, un contexto truncado es peor que
-# un modelo algo más lento.
-OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+# Con dos llamadas más chicas en vez de una grande, cada una necesita
+# menos contexto — pero ajusta según lo que tu máquina aguante.
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 
 
+# ── Fase 1: solo elementos del tipo penal ───────────────────────────
 class ElementStatus(BaseModel):
     element_id: int
     status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
@@ -30,6 +27,11 @@ class ElementStatus(BaseModel):
     missing_reason: Optional[str] = Field(None, description="Solo llenar si el status es FALTANTE")
 
 
+class ElementsAnalysisSchema(BaseModel):
+    elements_analysis: List[ElementStatus]
+
+
+# ── Fase 2: auditoría de objetividad + diligencias ──────────────────
 class ObjectivityAudit(BaseModel):
     cargo_elements: List[str]
     descargo_elements: List[str]
@@ -42,16 +44,13 @@ class SuggestedDiligence(BaseModel):
     purpose: str
 
 
-class AnalysisSchema(BaseModel):
-    elements_analysis: List[ElementStatus]
+class AuditSchema(BaseModel):
     objectivity_audit: ObjectivityAudit
     suggested_diligences: List[SuggestedDiligence]
 
 
-# Frases "señuelo" que sabemos que aparecían en versiones previas del
-# prompt como placeholders — si el modelo las regresa tal cual, es
-# indicio casi seguro de que copió la plantilla en vez de razonar
-# sobre el caso real. Amplía esta lista si detectas nuevos patrones.
+# Frases señuelo conocidas — si el modelo las regresa tal cual, copió
+# la plantilla en vez de razonar sobre el caso real.
 _PLANTILLA_SOSPECHOSA = [
     "diligencia a solicitar",
     "fundamento legal recuperado",
@@ -62,6 +61,7 @@ _PLANTILLA_SOSPECHOSA = [
     "hechos concretos de la narrativa que favorecen, eximen o atenúan la responsabilidad",
     "diligencia específica",
     "acción a realizar",
+    "cita breve o fragmento literal",
 ]
 
 
@@ -74,45 +74,44 @@ def _es_texto_plantilla(texto: str | None) -> bool:
 
 def _detectar_contenido_plantilla(analysis: dict) -> list[str]:
     """
-    Revisa el resultado ya parseado y regresa una lista de rutas de
-    campos que parecen contener texto copiado de la plantilla del
-    prompt en vez de análisis real del caso. Lista vacía = todo bien.
+    Revisa recursivamente cualquier valor string dentro del dict
+    parseado y regresa las rutas donde encontró texto de plantilla.
+    Funciona igual para el resultado de fase 1 (elements_analysis)
+    que para el de fase 2 (objectivity_audit / suggested_diligences).
     """
     hallazgos = []
 
-    for i, el in enumerate(analysis.get("elements_analysis", [])):
-        if _es_texto_plantilla(el.get("evidence_found")):
-            hallazgos.append(f"elements_analysis[{i}].evidence_found")
-        if _es_texto_plantilla(el.get("missing_reason")):
-            hallazgos.append(f"elements_analysis[{i}].missing_reason")
+    def _revisar(valor, ruta):
+        if isinstance(valor, str):
+            if _es_texto_plantilla(valor):
+                hallazgos.append(ruta)
+        elif isinstance(valor, dict):
+            for k, v in valor.items():
+                _revisar(v, f"{ruta}.{k}")
+        elif isinstance(valor, list):
+            for i, v in enumerate(valor):
+                _revisar(v, f"{ruta}[{i}]")
 
-    audit = analysis.get("objectivity_audit", {})
-    for i, item in enumerate(audit.get("cargo_elements", [])):
-        if _es_texto_plantilla(item):
-            hallazgos.append(f"objectivity_audit.cargo_elements[{i}]")
-    for i, item in enumerate(audit.get("descargo_elements", [])):
-        if _es_texto_plantilla(item):
-            hallazgos.append(f"objectivity_audit.descargo_elements[{i}]")
-
-    for i, dil in enumerate(analysis.get("suggested_diligences", [])):
-        if _es_texto_plantilla(dil.get("action")):
-            hallazgos.append(f"suggested_diligences[{i}].action")
-        if _es_texto_plantilla(dil.get("legal_basis")):
-            hallazgos.append(f"suggested_diligences[{i}].legal_basis")
-        if _es_texto_plantilla(dil.get("purpose")):
-            hallazgos.append(f"suggested_diligences[{i}].purpose")
+    for k, v in analysis.items():
+        _revisar(v, k)
 
     return hallazgos
 
 
-async def query_llm(system_prompt: str, user_prompt: str, _retry: bool = False) -> str:
+async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel], _retry: bool = False) -> dict:
+    """
+    Llama al LLM con un schema específico (ElementsAnalysisSchema o
+    AuditSchema) y regresa el dict ya parseado y validado contra
+    contenido de plantilla. Lanza HTTPException si el modelo insiste
+    en copiar texto genérico tras un reintento.
+    """
     payload = {
         "model": OLLAMA_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "format": AnalysisSchema.model_json_schema(),
+        "format": schema.model_json_schema(),
         "options": {
             "temperature": 0.1,
             "top_p": 0.2,
@@ -139,11 +138,6 @@ async def query_llm(system_prompt: str, user_prompt: str, _retry: bool = False) 
             detail=f"Error de conexión con Ollama en {OLLAMA_URL}: {str(exc)}",
         )
 
-    # Validación defensiva: si el resultado parece copiar la plantilla,
-    # no lo aceptamos en silencio. Reintentamos UNA vez con una
-    # instrucción explícita de no repetir texto genérico; si vuelve a
-    # fallar, preferimos un error claro a un análisis falso — el mismo
-    # principio de "no puedo concluir" que exige el anteproyecto.
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
@@ -160,7 +154,7 @@ async def query_llm(system_prompt: str, user_prompt: str, _retry: bool = False) 
             "una missing_reason específica del caso, o deja el arreglo vacío — nunca "
             "repitas una frase de ejemplo."
         )
-        return await query_llm(system_prompt, user_prompt + refuerzo, _retry=True)
+        return await query_llm(system_prompt, user_prompt + refuerzo, schema, _retry=True)
 
     if hallazgos and _retry:
         raise HTTPException(
@@ -172,4 +166,4 @@ async def query_llm(system_prompt: str, user_prompt: str, _retry: bool = False) 
             ),
         )
 
-    return content
+    return parsed
