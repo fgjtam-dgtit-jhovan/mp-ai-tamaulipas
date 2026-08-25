@@ -31,6 +31,7 @@ const isSaving = ref(false);
 const elements = ref([]);
 const diligences = ref([]);
 const evidence = ref([]);
+const facts = ref([]);
 let pollInterval = null;
 
 const isProcessing = computed(() => currentAnalysis.value?.status === 'draft');
@@ -50,6 +51,7 @@ const syncReview = () => {
         accepted: item.accepted ?? true,
     }));
     evidence.value = JSON.parse(JSON.stringify(currentAnalysis.value?.evidence || []));
+    facts.value = JSON.parse(JSON.stringify(currentAnalysis.value?.facts || []));
 };
 
 const stopPolling = () => {
@@ -233,8 +235,21 @@ watch(currentAnalysis, syncReview);
                         </div>
                     </div>
 
+                    <article class="result-card facts-card">
+                        <div class="result-card__heading"><div><p class="card-kicker">04 · Motor de hechos</p><h3>Información clasificada de la carpeta</h3></div><FileText class="size-6 text-sky-600" /></div>
+                        <p class="evidence-intro">La clasificación describe la naturaleza de cada fragmento y no convierte una manifestación en un hecho probado.</p>
+                        <div v-if="facts.length" class="facts-list">
+                            <div v-for="(fact, index) in facts" :key="fact.id || index" class="fact-item">
+                                <div class="fact-item__heading"><span class="fact-type">{{ fact.information_type }}</span><span class="fact-relation">{{ fact.procedural_relation }}</span></div>
+                                <p>{{ fact.content }}</p>
+                                <small>Origen: {{ fact.source }}</small>
+                            </div>
+                        </div>
+                        <div v-else class="empty-result">No hay hechos clasificados en este análisis.</div>
+                    </article>
+
                     <article class="result-card evidence-card">
-                        <div class="result-card__heading"><div><p class="card-kicker">04 · Registro probatorio</p><h3>Motor evidencial</h3></div><FileText class="size-6 text-emerald-600" /></div>
+                        <div class="result-card__heading"><div><p class="card-kicker">05 · Registro probatorio</p><h3>Motor evidencial</h3></div><FileText class="size-6 text-emerald-600" /></div>
                         <p class="evidence-intro">La evidencia se registra como relevante potencial hasta que exista valoración ministerial.</p>
                         <div v-if="evidence.length" class="evidence-table-wrap">
                             <table class="evidence-table">
@@ -297,9 +312,11 @@ watch(currentAnalysis, syncReview);
 .evidence-card { margin-top: 18px; }.evidence-intro { margin: -8px 0 17px; color: #71837d; font-size: 12px; }.evidence-table-wrap { overflow-x: auto; }.evidence-table { width: 100%; min-width: 960px; border-collapse: collapse; }.evidence-table th { padding: 10px 9px; background: #f1f6f3; color: #60736c; font-size: 10px; font-weight: 900; letter-spacing: .08em; text-align: left; text-transform: uppercase; }.evidence-table td { padding: 9px; border-bottom: 1px solid #e8efec; vertical-align: top; }.evidence-table input, .evidence-table textarea, .evidence-table select { width: 100%; border: 1px solid #d5e2dc; border-radius: 5px; background: #fff; color: #29443b; font: inherit; font-size: 11px; }.evidence-table input, .evidence-table select { min-height: 32px; padding: 6px 7px; }.evidence-table textarea { min-width: 210px; padding: 7px; resize: vertical; }.evidence-table td:first-child { display: grid; min-width: 150px; gap: 6px; }.evidence-table input:focus, .evidence-table textarea:focus, .evidence-table select:focus { border-color: #39aa7d; outline: 2px solid #d8f3e7; }
 .review-flow { display: flex; align-items: center; gap: 12px; margin: 0 0 18px; padding: 15px 18px; border: 1px solid #dce7e2; border-radius: 12px; background: #fff; }.review-flow__step { display: flex; align-items: center; gap: 9px; min-width: 0; color: #9aa9a4; }.review-flow__step > span { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 1px solid #d9e4df; border-radius: 50%; font-size: 10px; font-weight: 900; }.review-flow__step div { display: grid; gap: 2px; }.review-flow__step strong { font-size: 11px; }.review-flow__step small { font-size: 10px; }.review-flow__step--complete { color: #168965; }.review-flow__step--complete > span { border-color: #8eddbb; background: #effbf5; }.review-flow__step--active { color: #263f37; }.review-flow__step--active > span { border-color: #168965; background: #168965; color: #fff; }.review-flow__line { height: 1px; flex: 1; min-width: 18px; background: #dce7e2; }.final-review { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 18px; padding: 24px 26px; border: 1px solid #9ddfc2; border-radius: 16px; background: #effbf6; }.final-review__copy { max-width: 630px; }.final-review__copy h3 { margin: 0 0 6px; font-size: 20px; }.final-review__copy > p:not(.state-kicker) { margin: 0; color: #607970; font-size: 12px; line-height: 1.6; }.final-review__action { display: grid; min-width: 265px; gap: 10px; }.final-review__action > span { display: flex; align-items: center; justify-content: flex-end; gap: 6px; color: #168965; font-size: 11px; font-weight: 800; }.final-review .save-button { width: 100%; margin-top: 0; background: #0e6d4e; }.final-review .save-button:hover { background: #09573f; }
 .final-review { border-color: #c5d4ce; border-radius: 8px; background: #f8faf9; box-shadow: 0 4px 12px rgba(36, 69, 60, .035); }.final-review__copy h3 { color: #1d332c; font-size: 18px; letter-spacing: -.01em; }.final-review__copy > p:not(.state-kicker) { color: #657771; }.final-review__action { min-width: 280px; }.final-review__action > span { justify-content: flex-end; color: #73847e; font-weight: 700; }.final-review .save-button { border-radius: 6px; background: #183f36; }.final-review .save-button:hover { background: #0f3029; }
+.facts-card { margin-top: 18px; }.facts-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.fact-item { padding: 14px; border: 1px solid #dce7e2; border-radius: 9px; background: #fbfcfc; }.fact-item__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.fact-type, .fact-relation { color: #168965; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }.fact-relation { color: #788a84; }.fact-item p { margin: 10px 0 8px; color: #314b42; font-size: 12px; line-height: 1.6; }.fact-item small { color: #91a19c; font-size: 10px; }
 .fade-enter-active, .fade-leave-active { transition: opacity .3s ease, transform .3s ease; }.fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(8px); }
 @keyframes loading { 0% { transform: translateX(-120%); } 60%, 100% { transform: translateX(260%); } } @keyframes pulse-ring { 0%, 100% { transform: scale(.94); opacity: .7; } 50% { transform: scale(1.08); opacity: .2; } }
 @media (max-width: 900px) { .results-layout { grid-template-columns: 1fr; } }
 @media (max-width: 680px) { .analysis-shell { width: min(100% - 28px, 600px); padding-top: 20px; }.case-header { flex-direction: column; padding: 25px 22px; }.case-header__action { width: 100%; align-items: stretch; }.header-status { align-self: flex-start; }.overview-grid { grid-template-columns: 1fr; }.overview-card { padding: 20px; }.results-heading { align-items: flex-start; flex-direction: column; }.result-card { padding: 18px; }.state-panel--failed { flex-direction: column; }.element-topline { align-items: flex-start; flex-direction: column; }.element-actions { flex-wrap: wrap; }.element-actions span { width: 100%; }.element-actions span { margin-right: 0; } }
 @media (max-width: 680px) { .review-flow { align-items: stretch; flex-direction: column; gap: 9px; }.review-flow__line { width: 1px; height: 12px; flex: 0 0 auto; margin-left: 14px; }.final-review { align-items: stretch; flex-direction: column; padding: 20px; }.final-review__action { min-width: 0; }.final-review__action > span { justify-content: flex-start; } }
+@media (max-width: 680px) { .facts-list { grid-template-columns: 1fr; } }
 </style>

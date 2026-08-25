@@ -30,7 +30,7 @@ class CaseAnalysisService
 
         $crime = Crime::on('sqlsrv')->find($externalOffenseId);
 
-        $response = Http::timeout(300)->post("{$baseUrl}/api/v1/analyze-case", [
+        $response = Http::timeout(540)->post("{$baseUrl}/api/v1/analyze-case", [
             'external_case_id' => $externalCaseId,
             'external_offense_id' => $externalOffenseId,
             'offense_name' => $crime?->DLTO,
@@ -65,7 +65,7 @@ class CaseAnalysisService
 
         $data = $response->json('data');
 
-        if (! is_array($data) || ! isset($data['elements_analysis'], $data['objectivity_audit'], $data['suggested_diligences'])) {
+        if (! is_array($data) || ! isset($data['facts'], $data['elements_analysis'], $data['objectivity_audit'], $data['suggested_diligences'])) {
             throw new \UnexpectedValueException('MP-IA Engine devolvió una respuesta incompleta.');
         }
 

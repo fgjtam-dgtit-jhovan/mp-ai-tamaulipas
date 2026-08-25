@@ -17,7 +17,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
     public int $tries = 3;
 
-    public int $timeout = 330;
+    public int $timeout = 600;
 
     public function backoff(): array
     {
@@ -40,13 +40,23 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
             $data = $response;
 
+            $factRows = $this->factRows($data['facts'] ?? []);
+            $this->analysis->facts()->delete();
+            $this->analysis->facts()->createMany($factRows);
             $this->analysis->evidence()
                 ->where('origin', 'ia')
                 ->where('is_verified', false)
                 ->delete();
-            $this->analysis->evidence()->createMany($this->evidenceRows($data['elements_analysis'] ?? []));
+            foreach ($this->evidenceRows($data['elements_analysis'] ?? []) as $evidenceRow) {
+                $elementIds = $evidenceRow['element_ids'];
+                unset($evidenceRow['element_ids']);
+
+                $evidence = $this->analysis->evidence()->create($evidenceRow);
+                $evidence->offenseElements()->sync($elementIds);
+            }
 
             $this->analysis->update([
+                'facts_breakdown' => ['narrative' => $this->factNarrative, 'facts' => $factRows],
                 'elements_status' => $data['elements_analysis'] ?? [],
                 'objectivity_audit' => $data['objectivity_audit'] ?? [],
                 'suggested_diligences' => $data['suggested_diligences'] ?? [],
@@ -66,23 +76,50 @@ class ProcessCaseAnalysisJob implements ShouldQueue
         }
     }
 
+    private function factRows(array $facts): array
+    {
+        return collect($facts)
+            ->filter(fn (array $fact): bool => filled($fact['content'] ?? null))
+            ->map(fn (array $fact): array => [
+                'information_type' => $fact['information_type'] ?? 'MANIFESTACION',
+                'content' => trim($fact['content']),
+                'source' => $fact['source'] ?? 'narrativa_de_la_carpeta',
+                'procedural_relation' => $fact['procedural_relation'] ?? 'neutral',
+            ])
+            ->unique(fn (array $fact): string => $this->normalizedKey($fact['information_type'].'|'.$fact['content']))
+            ->values()
+            ->all();
+    }
+
     private function evidenceRows(array $elementsAnalysis): array
     {
         return collect($elementsAnalysis)
             ->filter(fn (array $element): bool => filled($element['evidence_found'] ?? null))
-            ->map(fn (array $element): array => [
-                'offense_element_id' => $element['element_id'] ?? null,
-                'origin' => 'ia',
-                'evidence_type' => 'hecho_narrado',
-                'source' => 'narrativa_de_la_carpeta',
-                'evidence_date' => null,
-                'related_fact' => $element['evidence_found'],
-                'authenticity_status' => 'pendiente',
-                'valuation_status' => 'pendiente',
-                'procedural_relation' => $this->proceduralRelation($element['status'] ?? null),
-            ])
+            ->groupBy(fn (array $element): string => $this->normalizedKey($element['evidence_found']))
+            ->map(function ($elements): array {
+                $firstElement = $elements->first();
+                $elementIds = $elements->pluck('element_id')->filter()->unique()->values()->all();
+
+                return [
+                    'offense_element_id' => $elementIds[0] ?? null,
+                    'element_ids' => $elementIds,
+                    'origin' => 'ia',
+                    'evidence_type' => 'hecho_narrado',
+                    'source' => 'narrativa_de_la_carpeta',
+                    'evidence_date' => null,
+                    'related_fact' => trim($firstElement['evidence_found']),
+                    'authenticity_status' => 'pendiente',
+                    'valuation_status' => 'pendiente',
+                    'procedural_relation' => $this->proceduralRelation($firstElement['status'] ?? null),
+                ];
+            })
             ->values()
             ->all();
+    }
+
+    private function normalizedKey(string $value): string
+    {
+        return mb_strtolower((string) preg_replace('/\s+/u', ' ', trim($value)));
     }
 
     private function proceduralRelation(?string $status): string

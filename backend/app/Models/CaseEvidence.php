@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class CaseEvidence extends Model
 {
@@ -42,5 +43,10 @@ class CaseEvidence extends Model
     public function offenseElement(): BelongsTo
     {
         return $this->belongsTo(OffenseElement::class);
+    }
+
+    public function offenseElements(): BelongsToMany
+    {
+        return $this->belongsToMany(OffenseElement::class, 'case_evidence_offense_elements');
     }
 }

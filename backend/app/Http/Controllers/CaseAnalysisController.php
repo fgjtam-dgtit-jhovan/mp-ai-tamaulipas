@@ -61,7 +61,7 @@ class CaseAnalysisController extends Controller
 
     public function show(int $id): Response
     {
-        $analysis = CaseAnalysis::with('evidence')->findOrFail($id);
+        $analysis = CaseAnalysis::with(['evidence', 'facts'])->findOrFail($id);
 
         return Inertia::render('CaseAnalysis/Show', [
             'analysis' => $analysis,

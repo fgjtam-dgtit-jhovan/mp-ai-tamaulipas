@@ -64,6 +64,12 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     # Si tienes GPU NVIDIA disponible, descomenta lo siguiente:
     # deploy:
     #   resources:
@@ -91,9 +97,12 @@ services:
     ports:
       - "8001:8000"
     depends_on:
-      - postgres
-      - qdrant
-      - ollama
+      postgres:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_healthy
     volumes:
       - ./ai-service:/app
 

@@ -1,66 +1,58 @@
 import json
 
-from app.services.llm_service import AuditSchema, ElementsAnalysisSchema, query_llm
+from app.services.llm_service import AuditSchema, InitialAnalysisSchema, query_llm
 from app.services.qdrant_service import search_legal_articles
 
 
-# ── FASE 1: solo evaluar elementos del tipo penal ───────────────────
-async def _analizar_elementos(narrative: str, offense_name: str | None, offense_id: int,
-                               elements: list, legal_context: list, legal_articles: list) -> list:
+# ── FASE 1: clasificar hechos y evaluar elementos en una sola llamada ─
+async def _analisis_inicial(narrative: str, offense_name: str | None, offense_id: int,
+                            elements: list, legal_context: list, legal_articles: list) -> dict:
     system_prompt = '''
-    Eres un asistente de auditoría jurídica para el Ministerio Público, especializado en análisis penal.
-    Tu ÚNICA tarea es comparar la narrativa de hechos con cada elemento jurídico del tipo penal y decidir
-    si cada elemento está acreditado, no acreditado o faltante. NO hagas nada más que esto.
+    Eres un asistente de análisis penal para el Ministerio Público. Realiza DOS tareas sobre la
+    misma narrativa y devuelve ambos resultados en el JSON solicitado.
 
-    REGLAS ESTRICTAS:
-    1. No conviertas definiciones legales en hechos. Solo usa datos expresados en la narrativa.
-    2. ACREDITADO solo si existe un hecho concreto y verificable en la narrativa que cubre el elemento.
-    3. CONTRADICTORIO solo si la narrativa expresa explícitamente lo contrario del elemento.
-    4. FALTANTE cuando la narrativa no aporta información suficiente, es ambigua u omite un requisito esencial.
-    5. evidence_found debe ser una cita literal breve de la narrativa; nunca una definición legal.
-    6. missing_reason debe ser específica de ESTE caso — nunca una frase genérica reutilizable en otro caso.
-    7. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo. Es solo para mostrarte el
-       formato — no es contenido válido para este caso.
-    8. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
+    TAREA A — CLASIFICAR INFORMACIÓN:
+    Extrae únicamente fragmentos expresados en la narrativa y clasifícalos sin agregar datos.
+    Clasificaciones permitidas:
+    - MANIFESTACION: lo que una persona afirma o declara.
+    - EVIDENCIA: objeto, documento, fotografía, video o registro mencionado.
+    - TESTIMONIO: declaración atribuida a un tercero.
+    - DATO_TECNICO: dictamen, medición, resultado o informe técnico.
+    - HIPOTESIS: posibilidad o explicación no confirmada.
+    - CONCLUSION: afirmación presentada como resultado o comprobación.
+
+    TAREA B — EVALUAR ELEMENTOS JURÍDICOS:
+    Compara la narrativa con cada elemento jurídico y decide si está ACREDITADO, FALTANTE o CONTRADICTORIO.
+
+    REGLAS COMUNES:
+    1. Conserva el sentido y usa citas breves de la narrativa.
+    2. No conviertas una manifestación en un hecho probado.
+    3. No conviertas definiciones legales en hechos.
+    4. Si no hay fragmentos de una clasificación, no la inventes.
+    5. procedural_relation debe ser cargo, descargo o neutral según el contenido explícito.
+    6. evidence_found debe ser una cita literal breve de la narrativa.
+    7. missing_reason debe ser específica de este caso.
+    8. Cada fragmento debe ser breve; no incluyas explicaciones fuera de los campos solicitados.
+    9. Responde únicamente con JSON válido.
     '''
-
     user_prompt = f'''
-    EJEMPLO DE FORMATO (caso ficticio de referencia — NO copies estos valores):
+    DELITO: {offense_name or f"ID {offense_id}"}
 
-    Narrativa de ejemplo: "...el imputado tomó el teléfono celular marca Samsung de la mesa
-    del comedor de la vivienda de la víctima, sin su permiso, mientras ella dormía..."
-
-    {{
-      "elements_analysis": [
-        {{"element_id": 1, "status": "ACREDITADO", "evidence_found": "tomó el teléfono celular marca Samsung de la mesa del comedor", "missing_reason": null}},
-        {{"element_id": 2, "status": "FALTANTE", "evidence_found": null, "missing_reason": "La narrativa no menciona quién es el propietario del teléfono ni si pertenece a persona distinta del imputado"}}
-      ]
-    }}
-
-    ---
-
-    CASO REAL A ANALIZAR (usa ÚNICAMENTE esta información):
-
-    HECHOS DE LA CARPETA:
+    NARRATIVA DE LA CARPETA:
     "{narrative}"
 
-    DELITO:
-    {offense_name or f"ID {offense_id}"}
-
-    MARCO JURÍDICO RECUPERADO DE QDRANT:
+    MARCO JURÍDICO RECUPERADO:
     {json.dumps(legal_context, ensure_ascii=False)}
 
-    ELEMENTOS A EVALUAR:
+    ELEMENTOS JURÍDICOS:
     {json.dumps(elements, ensure_ascii=False)}
 
     ARTÍCULOS ASOCIADOS:
     {json.dumps(legal_articles, ensure_ascii=False)}
 
-    Responde ahora con el JSON del CASO REAL, no del ejemplo.
+    Devuelve un JSON con las claves "facts" y "elements_analysis". Incluye como máximo 8 hechos.
     '''
-
-    result = await query_llm(system_prompt, user_prompt, ElementsAnalysisSchema)
-    return result["elements_analysis"]
+    return await query_llm(system_prompt, user_prompt, InitialAnalysisSchema)
 
 
 # ── FASE 2: auditar el resultado de fase 1 + sugerir diligencias ───
@@ -136,15 +128,18 @@ async def analyze_case_file(
 
     legal_context = await search_legal_articles(query=narrative, offense_id=offense_id, limit=5)
 
-    elements_analysis = await _analizar_elementos(
+    initial_result = await _analisis_inicial(
         narrative, offense_name, offense_id, elements, legal_context, legal_articles
     )
+    facts = initial_result["facts"]
+    elements_analysis = initial_result["elements_analysis"]
 
     audit_result = await _auditar_objetividad(
         narrative, offense_name, offense_id, elements_analysis, legal_context
     )
 
     return {
+      "facts": facts,
         "elements_analysis": elements_analysis,
         "objectivity_audit": audit_result["objectivity_audit"],
         "suggested_diligences": audit_result["suggested_diligences"],

@@ -1,5 +1,7 @@
 # app/services/llm_service.py
 import json
+import asyncio
+import logging
 import os
 from typing import List, Optional
 
@@ -17,17 +19,38 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:3b-instruct"
 # Con dos llamadas más chicas en vez de una grande, cada una necesita
 # menos contexto — pero ajusta según lo que tu máquina aguante.
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "240"))
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "1200"))
+logger = logging.getLogger(__name__)
 
 
 # ── Fase 1: solo elementos del tipo penal ───────────────────────────
 class ElementStatus(BaseModel):
     element_id: int
     status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
-    evidence_found: Optional[str] = Field(None, description="Cita breve si está ACREDITADO")
-    missing_reason: Optional[str] = Field(None, description="Solo llenar si el status es FALTANTE")
+    evidence_found: Optional[str] = Field(None, max_length=500, description="Cita breve si está ACREDITADO")
+    missing_reason: Optional[str] = Field(None, max_length=500, description="Solo llenar si el status es FALTANTE")
 
 
 class ElementsAnalysisSchema(BaseModel):
+    elements_analysis: List[ElementStatus]
+
+
+class FactItem(BaseModel):
+    information_type: str = Field(
+        description="MANIFESTACION, EVIDENCIA, TESTIMONIO, DATO_TECNICO, HIPOTESIS o CONCLUSION"
+    )
+    content: str = Field(max_length=500, description="Fragmento breve y fiel de la narrativa")
+    source: str = Field(max_length=200, description="Origen explícito del fragmento en la narrativa")
+    procedural_relation: str = Field(description="cargo, descargo o neutral")
+
+
+class FactsSchema(BaseModel):
+    facts: List[FactItem]
+
+
+class InitialAnalysisSchema(BaseModel):
+    facts: List[FactItem]
     elements_analysis: List[ElementStatus]
 
 
@@ -117,31 +140,46 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
             "top_p": 0.2,
             "seed": 42,
             "num_ctx": OLLAMA_NUM_CTX,
+            "num_predict": OLLAMA_NUM_PREDICT,
         },
         "stream": False,
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
-            response.raise_for_status()
-            result = response.json()
-            content = result["message"]["content"]
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Error en Ollama ({exc.response.status_code}): {exc.response.text}",
-        )
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Error de conexión con Ollama en {OLLAMA_URL}: {str(exc)}",
-        )
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
+                response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+                response.raise_for_status()
+                result = response.json()
+                content = result["message"]["content"]
+                break
+        except httpx.HTTPStatusError as exc:
+            logger.error("Ollama respondió HTTP %s: %s", exc.response.status_code, exc.response.text[:2000])
+            raise HTTPException(
+                status_code=502,
+                detail=f"Error en Ollama ({exc.response.status_code}): {exc.response.text}",
+            )
+        except httpx.RequestError as exc:
+            if attempt == 2:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error de conexión con Ollama en {OLLAMA_URL}: {str(exc)}",
+                )
+
+            logger.warning("Ollama no está disponible; reintentando (%s/3): %s", attempt + 1, exc)
+            await asyncio.sleep(2 ** attempt)
 
     try:
         parsed = json.loads(content)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="El modelo no regresó un JSON válido.")
+    except json.JSONDecodeError as exc:
+        logger.error("Ollama devolvió JSON inválido: %s; contenido: %s", exc, content[:2000])
+        raise HTTPException(status_code=502, detail="El modelo no regresó un JSON válido.") from exc
+
+    try:
+        parsed = schema.model_validate(parsed).model_dump()
+    except Exception as exc:
+        logger.error("Ollama devolvió una estructura inválida: %s; contenido: %s", exc, content[:2000])
+        raise HTTPException(status_code=502, detail="El modelo devolvió una estructura JSON inválida.") from exc
 
     hallazgos = _detectar_contenido_plantilla(parsed)
 

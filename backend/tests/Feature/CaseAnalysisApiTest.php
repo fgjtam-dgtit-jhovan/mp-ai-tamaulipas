@@ -105,4 +105,35 @@ class CaseAnalysisApiTest extends TestCase
             'is_verified' => true,
         ]);
     }
+
+    public function test_repeated_ai_quotes_are_stored_once_and_linked_to_all_elements(): void
+    {
+        $analysis = CaseAnalysis::create([
+            'external_case_id' => 'EXP-101',
+            'external_offense_id' => 42,
+            'user_id' => 1,
+            'status' => 'draft',
+        ]);
+
+        $service = $this->mock(CaseAnalysisService::class);
+        $service->shouldReceive('runAnalysis')->once()->andReturn([
+            'facts' => [
+                ['information_type' => 'EVIDENCIA', 'content' => 'CUENTA NUMERO 10501492731', 'source' => 'narrativa', 'procedural_relation' => 'cargo'],
+                ['information_type' => 'EVIDENCIA', 'content' => 'CUENTA   NUMERO 10501492731', 'source' => 'narrativa', 'procedural_relation' => 'cargo'],
+            ],
+            'elements_analysis' => [
+                ['element_id' => 1, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA NUMERO 10501492731'],
+                ['element_id' => 2, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA   NUMERO 10501492731'],
+                ['element_id' => 3, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA NUMERO 10501492731'],
+            ],
+            'objectivity_audit' => [],
+            'suggested_diligences' => [],
+        ]);
+
+        (new ProcessCaseAnalysisJob($analysis, 'Narrativa.'))->handle($service);
+
+        $this->assertDatabaseCount('case_evidence', 1);
+        $this->assertDatabaseCount('case_facts', 1);
+        $this->assertDatabaseCount('case_evidence_offense_elements', 3);
+    }
 }
