@@ -101,28 +101,30 @@ class ProcessCaseAnalysisJob implements ShouldQueue
      * MANIFESTACION no es evidencia formal, solo el relato del
      * declarante (distinción que exige la sección 7.2 del anteproyecto).
      *
-     * Cada evidencia se vincula a los elementos jurídicos cuyo
-     * evidence_found coincide textualmente con el contenido del hecho,
-     * para no perder la relación con el Motor de Reglas.
+     * Cada evidencia se vincula a los elementos jurídicos usando el
+     * supporting_fact_index que el ai-service regresa junto con cada
+     * elemento — el índice exacto dentro de este mismo array de
+     * facts, no una comparación de texto post-hoc (que resultaba
+     * poco confiable entre dos llamadas separadas al LLM).
      */
     private function evidenceRows(array $factRows, array $elementsAnalysis): array
     {
         $tiposConsideradosEvidencia = ['EVIDENCIA', 'TESTIMONIO', 'DATO_TECNICO'];
 
+        // El ai-service ahora regresa supporting_fact_index: el índice
+        // exacto (dentro del array facts original) que sustenta cada
+        // elemento. Mucho más confiable que comparar texto de dos
+        // llamadas distintas al LLM.
+        $elementIdsPorFactIndex = collect($elementsAnalysis)
+            ->filter(fn (array $el): bool => $el['supporting_fact_index'] !== null)
+            ->groupBy('supporting_fact_index')
+            ->map(fn ($group) => $group->pluck('element_id')->filter()->unique()->values()->all());
+
         return collect($factRows)
+            ->values()
             ->filter(fn (array $fact): bool => in_array($fact['information_type'], $tiposConsideradosEvidencia, true))
-            ->map(function (array $fact) use ($elementsAnalysis): array {
-                $elementIds = collect($elementsAnalysis)
-                    ->filter(fn (array $el): bool => filled($el['evidence_found'] ?? null)
-                        && str_contains(
-                            $this->normalizedKey($el['evidence_found']),
-                            $this->normalizedKey($fact['content'])
-                        ))
-                    ->pluck('element_id')
-                    ->filter()
-                    ->unique()
-                    ->values()
-                    ->all();
+            ->map(function (array $fact, int $index) use ($elementIdsPorFactIndex): array {
+                $elementIds = $elementIdsPorFactIndex->get($index, []);
 
                 return [
                     'offense_element_id' => $elementIds[0] ?? null,

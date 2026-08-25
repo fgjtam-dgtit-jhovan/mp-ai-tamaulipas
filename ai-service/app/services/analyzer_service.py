@@ -24,8 +24,11 @@ async def _clasificar_hechos(narrative: str) -> list:
     2. No conviertas una manifestación en un hecho probado ni en conclusión.
     3. Si la narrativa no tiene fragmentos de una clasificación, simplemente no la incluyas.
     4. Máximo 8 hechos — prioriza los más relevantes para el caso.
-    5. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
-    6. Responde ÚNICAMENTE con JSON válido.
+    5. is_confirmed debe ser false si el propio texto trae señales de incertidumbre ("por confirmar",
+       "presuntamente", "se reporta", "sin confirmar", "aparentemente" o similares) — revisa el fragmento
+       completo, no solo el inicio.
+    6. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
+    7. Responde ÚNICAMENTE con JSON válido.
     '''
 
     user_prompt = f'''
@@ -36,9 +39,9 @@ async def _clasificar_hechos(narrative: str) -> list:
 
     {{
       "facts": [
-        {{"information_type": "MANIFESTACION", "content": "vio al imputado tomar el teléfono de la mesa", "source": "declaración del denunciante", "procedural_relation": "cargo"}},
-        {{"information_type": "TESTIMONIO", "content": "escuchó gritos", "source": "testimonio de vecino", "procedural_relation": "cargo"}},
-        {{"information_type": "EVIDENCIA", "content": "fotografía del lugar de los hechos", "source": "anexo fotográfico", "procedural_relation": "neutral"}}
+        {{"information_type": "MANIFESTACION", "content": "vio al imputado tomar el teléfono de la mesa", "source": "declaración del denunciante", "procedural_relation": "cargo", "is_confirmed": true}},
+        {{"information_type": "TESTIMONIO", "content": "escuchó gritos", "source": "testimonio de vecino", "procedural_relation": "cargo", "is_confirmed": true}},
+        {{"information_type": "EVIDENCIA", "content": "fotografía del lugar de los hechos", "source": "anexo fotográfico", "procedural_relation": "neutral", "is_confirmed": true}}
       ]
     }}
 
@@ -56,45 +59,62 @@ async def _clasificar_hechos(narrative: str) -> list:
 
 # ── FASE 1b: SOLO evaluar elementos del tipo penal ──────────────────
 async def _analizar_elementos(narrative: str, offense_name: str | None, offense_id: int,
-                               elements: list, legal_context: list, legal_articles: list) -> list:
+                               elements: list, legal_context: list, legal_articles: list,
+                               facts: list) -> list:
     system_prompt = '''
     Eres un asistente de auditoría jurídica para el Ministerio Público. Tu ÚNICA tarea es comparar
-    la narrativa de hechos con cada elemento jurídico del tipo penal y decidir si cada elemento está
-    acreditado, no acreditado o faltante. NO clasifiques hechos, NO hagas nada más que esto.
+    la lista de hechos ya clasificados con cada elemento jurídico del tipo penal y decidir si cada
+    elemento está acreditado, no acreditado o faltante. NO reclasifiques hechos, NO hagas nada más
+    que esto.
 
     REGLAS ESTRICTAS:
-    1. No conviertas definiciones legales en hechos. Solo usa datos expresados en la narrativa.
-    2. ACREDITADO solo si existe un hecho concreto y verificable en la narrativa que cubre el elemento.
-    3. CONTRADICTORIO solo si la narrativa expresa explícitamente lo contrario del elemento.
-    4. FALTANTE cuando la narrativa no aporta información suficiente, es ambigua u omite un requisito esencial.
-    5. evidence_found debe ser una cita literal breve de la narrativa; nunca una definición legal.
-    6. missing_reason debe ser específica de ESTE caso — nunca una frase genérica reutilizable en otro caso.
-    7. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
-    8. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
+    1. Solo puedes usar los hechos de la lista que se te entrega — no regreses a la narrativa cruda.
+    2. ACREDITADO solo si existe un hecho concreto en esa lista que cubre el elemento.
+    3. CONTRADICTORIO solo si algún hecho de la lista expresa explícitamente lo contrario del elemento.
+    4. FALTANTE cuando ningún hecho de la lista cubre el elemento.
+    5. evidence_found debe ser el texto EXACTO del hecho de la lista que usaste; nunca una definición legal.
+    6. supporting_fact_index debe ser la posición (empezando en 0) de ese mismo hecho dentro de la lista.
+       Si status es FALTANTE, deja supporting_fact_index en null.
+    7. missing_reason debe ser específica de ESTE caso — nunca una frase genérica reutilizable en otro caso.
+    8. Cada hecho de la lista trae un campo is_confirmed. Si is_confirmed es false, NO lo uses para
+       marcar ACREDITADO — márcalo FALTANTE y explica en missing_reason que la información disponible
+       está pendiente de confirmación.
+    9. No reutilices el mismo hecho como evidence_found para dos elementos distintos a menos que ese
+       hecho realmente contenga información específica para AMBOS por separado. Si dos elementos solo
+       tienen en común un hecho genérico o incierto, revisa con más cuidado si de verdad aplica a cada
+       uno o si en realidad falta información específica para alguno.
+    10. PROHIBIDO ABSOLUTO: nunca escribas la palabra "FACTS", "lista de hechos", ni ningún nombre de
+        variable o etiqueta técnica dentro de evidence_found o missing_reason — esos campos deben leerse
+        como una oración normal sobre EL CASO, nunca mencionar la estructura de datos que estás usando.
+    11. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
+    12. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
     '''
 
     user_prompt = f'''
     EJEMPLO DE FORMATO (caso ficticio de referencia — NO copies estos valores):
 
-    Narrativa de ejemplo: "...el imputado tomó el teléfono celular marca Samsung de la mesa
-    del comedor de la vivienda de la víctima, sin su permiso, mientras ella dormía..."
+    Hechos disponibles para este caso ficticio:
+    [
+      {{"information_type": "MANIFESTACION", "content": "tomó el teléfono celular marca Samsung de la mesa del comedor"}},
+      {{"information_type": "MANIFESTACION", "content": "ocurrió mientras la víctima dormía"}}
+    ]
 
     {{
       "elements_analysis": [
-        {{"element_id": 1, "status": "ACREDITADO", "evidence_found": "tomó el teléfono celular marca Samsung de la mesa del comedor", "missing_reason": null}},
-        {{"element_id": 2, "status": "FALTANTE", "evidence_found": null, "missing_reason": "La narrativa no menciona quién es el propietario del teléfono ni si pertenece a persona distinta del imputado"}}
+        {{"element_id": 1, "status": "ACREDITADO", "evidence_found": "tomó el teléfono celular marca Samsung de la mesa del comedor", "missing_reason": null, "supporting_fact_index": 0}},
+        {{"element_id": 2, "status": "FALTANTE", "evidence_found": null, "missing_reason": "No se menciona quién es el propietario del teléfono", "supporting_fact_index": null}}
       ]
     }}
 
     ---
 
-    CASO REAL A ANALIZAR (usa ÚNICAMENTE esta información):
-
-    HECHOS DE LA CARPETA:
-    "{narrative}"
+    CASO REAL A ANALIZAR (usa ÚNICAMENTE los hechos listados abajo, no la narrativa cruda):
 
     DELITO:
     {offense_name or f"ID {offense_id}"}
+
+    HECHOS DISPONIBLES (usa la posición de esta lista para supporting_fact_index):
+    {json.dumps(facts, ensure_ascii=False)}
 
     MARCO JURÍDICO RECUPERADO DE QDRANT:
     {json.dumps(legal_context, ensure_ascii=False)}
@@ -187,7 +207,7 @@ async def analyze_case_file(
     facts = await _clasificar_hechos(narrative)
 
     elements_analysis = await _analizar_elementos(
-        narrative, offense_name, offense_id, elements, legal_context, legal_articles
+        narrative, offense_name, offense_id, elements, legal_context, legal_articles, facts
     )
 
     audit_result = await _auditar_objetividad(

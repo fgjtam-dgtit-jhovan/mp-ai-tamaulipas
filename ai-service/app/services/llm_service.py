@@ -34,6 +34,12 @@ class FactItem(BaseModel):
         ),
     )
     procedural_relation: str = Field(description="cargo, descargo o neutral")
+    is_confirmed: bool = Field(
+        description=(
+            "false si el propio texto señala incertidumbre (ej. 'por confirmar', 'presuntamente', "
+            "'se reporta', 'sin confirmar', 'aparentemente'). true si se presenta como dato firme."
+        )
+    )
 
 
 class FactsOnlySchema(BaseModel):
@@ -46,6 +52,13 @@ class ElementStatus(BaseModel):
     status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
     evidence_found: Optional[str] = Field(None, max_length=300, description="Cita literal muy breve si está ACREDITADO")
     missing_reason: Optional[str] = Field(None, max_length=300, description="Razón breve y específica si el status es FALTANTE")
+    supporting_fact_index: Optional[int] = Field(
+        None,
+        description=(
+            "Si status es ACREDITADO o CONTRADICTORIO, el ÍNDICE (empezando en 0) del hecho de la "
+            "lista FACTS que sustenta esta decisión. null si status es FALTANTE."
+        ),
+    )
 
 
 class ElementsAnalysisSchema(BaseModel):
@@ -82,6 +95,8 @@ _PLANTILLA_SOSPECHOSA = [
     "acción a realizar",
     "cita breve o fragmento literal",
     "nombre breve del origen",
+    "ningún hecho de facts",
+    "ningún hecho en facts",
 ]
 
 
