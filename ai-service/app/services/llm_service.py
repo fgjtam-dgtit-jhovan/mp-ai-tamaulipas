@@ -1,6 +1,6 @@
 # app/services/llm_service.py
-import json
 import asyncio
+import json
 import logging
 import os
 from typing import List, Optional
@@ -10,47 +10,45 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 OLLAMA_URL = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-
-# IMPORTANTE: "llama3.2" a secas suele resolver a la variante de 3B.
-# Confirma que OLLAMA_MODEL en tu .env apunte a lo que realmente
-# descargaste con `ollama pull` (ahora mismo: qwen2.5:3b-instruct).
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:3b-instruct"
-
-# Con dos llamadas más chicas en vez de una grande, cada una necesita
-# menos contexto — pero ajusta según lo que tu máquina aguante.
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "240"))
-OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "1200"))
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "2400"))
 logger = logging.getLogger(__name__)
 
 
-# ── Fase 1: solo elementos del tipo penal ───────────────────────────
-class ElementStatus(BaseModel):
-    element_id: int
-    status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
-    evidence_found: Optional[str] = Field(None, max_length=500, description="Cita breve si está ACREDITADO")
-    missing_reason: Optional[str] = Field(None, max_length=500, description="Solo llenar si el status es FALTANTE")
-
-
-class ElementsAnalysisSchema(BaseModel):
-    elements_analysis: List[ElementStatus]
-
-
+# ── Fase 1a: SOLO clasificación de hechos (Motor de Hechos) ────────
 class FactItem(BaseModel):
     information_type: str = Field(
         description="MANIFESTACION, EVIDENCIA, TESTIMONIO, DATO_TECNICO, HIPOTESIS o CONCLUSION"
     )
-    content: str = Field(max_length=500, description="Fragmento breve y fiel de la narrativa")
-    source: str = Field(max_length=200, description="Origen explícito del fragmento en la narrativa")
+    content: str = Field(max_length=300, description="Fragmento breve y fiel de la narrativa")
+    source: str = Field(
+        max_length=100,
+        description=(
+            "A QUIÉN o QUÉ pertenece este fragmento, en 2-5 palabras. Ejemplos válidos: "
+            "'declaración del denunciante', 'testimonio de vecino', 'dictamen pericial en "
+            "criminalística', 'reporte de C5', 'fotografía anexa'. Si la narrativa no atribuye "
+            "el dato a nadie específico, usa 'narrativa_de_la_carpeta'. NUNCA copies el contenido "
+            "del hecho aquí — este campo identifica el ORIGEN, no repite el dato."
+        ),
+    )
     procedural_relation: str = Field(description="cargo, descargo o neutral")
 
 
-class FactsSchema(BaseModel):
-    facts: List[FactItem]
+class FactsOnlySchema(BaseModel):
+    facts: List[FactItem] = Field(max_length=8)
 
 
-class InitialAnalysisSchema(BaseModel):
-    facts: List[FactItem]
+# ── Fase 1b: SOLO elementos del tipo penal ──────────────────────────
+class ElementStatus(BaseModel):
+    element_id: int
+    status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
+    evidence_found: Optional[str] = Field(None, max_length=300, description="Cita literal muy breve si está ACREDITADO")
+    missing_reason: Optional[str] = Field(None, max_length=300, description="Razón breve y específica si el status es FALTANTE")
+
+
+class ElementsAnalysisSchema(BaseModel):
     elements_analysis: List[ElementStatus]
 
 
@@ -72,8 +70,6 @@ class AuditSchema(BaseModel):
     suggested_diligences: List[SuggestedDiligence]
 
 
-# Frases señuelo conocidas — si el modelo las regresa tal cual, copió
-# la plantilla en vez de razonar sobre el caso real.
 _PLANTILLA_SOSPECHOSA = [
     "diligencia a solicitar",
     "fundamento legal recuperado",
@@ -85,6 +81,7 @@ _PLANTILLA_SOSPECHOSA = [
     "diligencia específica",
     "acción a realizar",
     "cita breve o fragmento literal",
+    "nombre breve del origen",
 ]
 
 
@@ -96,12 +93,6 @@ def _es_texto_plantilla(texto: str | None) -> bool:
 
 
 def _detectar_contenido_plantilla(analysis: dict) -> list[str]:
-    """
-    Revisa recursivamente cualquier valor string dentro del dict
-    parseado y regresa las rutas donde encontró texto de plantilla.
-    Funciona igual para el resultado de fase 1 (elements_analysis)
-    que para el de fase 2 (objectivity_audit / suggested_diligences).
-    """
     hallazgos = []
 
     def _revisar(valor, ruta):
@@ -122,12 +113,6 @@ def _detectar_contenido_plantilla(analysis: dict) -> list[str]:
 
 
 async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel], _retry: bool = False) -> dict:
-    """
-    Llama al LLM con un schema específico (ElementsAnalysisSchema o
-    AuditSchema) y regresa el dict ya parseado y validado contra
-    contenido de plantilla. Lanza HTTPException si el modelo insiste
-    en copiar texto genérico tras un reintento.
-    """
     payload = {
         "model": OLLAMA_MODEL,
         "messages": [
@@ -145,6 +130,9 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
         "stream": False,
     }
 
+    content = None
+    done_reason = None
+
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
@@ -152,6 +140,7 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
                 response.raise_for_status()
                 result = response.json()
                 content = result["message"]["content"]
+                done_reason = result.get("done_reason")
                 break
         except httpx.HTTPStatusError as exc:
             logger.error("Ollama respondió HTTP %s: %s", exc.response.status_code, exc.response.text[:2000])
@@ -165,32 +154,47 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
                     status_code=503,
                     detail=f"Error de conexión con Ollama en {OLLAMA_URL}: {str(exc)}",
                 )
-
             logger.warning("Ollama no está disponible; reintentando (%s/3): %s", attempt + 1, exc)
             await asyncio.sleep(2 ** attempt)
+
+    if done_reason == "length" and not _retry:
+        return await query_llm(
+            system_prompt,
+            user_prompt + "\nIMPORTANTE: responde de forma mucho más compacta; no copies la "
+            "narrativa en ningún campo y cierra siempre el JSON.",
+            schema,
+            _retry=True,
+        )
 
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        logger.error("Ollama devolvió JSON inválido: %s; contenido: %s", exc, content[:2000])
+        logger.error("Ollama devolvió JSON inválido: %s; contenido: %s", exc, (content or "")[:2000])
+        if not _retry:
+            return await query_llm(
+                system_prompt,
+                user_prompt + "\nIMPORTANTE: la respuesta anterior quedó incompleta. Usa "
+                "fragmentos breves, no copies la narrativa y cierra correctamente el JSON.",
+                schema,
+                _retry=True,
+            )
         raise HTTPException(status_code=502, detail="El modelo no regresó un JSON válido.") from exc
 
     try:
         parsed = schema.model_validate(parsed).model_dump()
     except Exception as exc:
-        logger.error("Ollama devolvió una estructura inválida: %s; contenido: %s", exc, content[:2000])
+        logger.error("Ollama devolvió una estructura inválida: %s; contenido: %s", exc, (content or "")[:2000])
         raise HTTPException(status_code=502, detail="El modelo devolvió una estructura JSON inválida.") from exc
 
     hallazgos = _detectar_contenido_plantilla(parsed)
 
     if hallazgos and not _retry:
         refuerzo = (
-            "\n\nADVERTENCIA: tu respuesta anterior repitió texto genérico de ejemplo "
-            f"en estos campos: {', '.join(hallazgos)}. Esto NO es válido. Cada campo debe "
-            "contener contenido derivado ÚNICA Y EXCLUSIVAMENTE de la narrativa real de "
-            "este caso. Si genuinamente no hay información suficiente, usa FALTANTE con "
-            "una missing_reason específica del caso, o deja el arreglo vacío — nunca "
-            "repitas una frase de ejemplo."
+            "\n\nADVERTENCIA: tu respuesta anterior repitió texto genérico de ejemplo o de "
+            f"instrucción en estos campos: {', '.join(hallazgos)}. Esto NO es válido. Cada campo "
+            "debe contener contenido derivado ÚNICA Y EXCLUSIVAMENTE de la narrativa real de este "
+            "caso. Si genuinamente no hay información suficiente, usa FALTANTE con una "
+            "missing_reason específica del caso, o deja el arreglo vacío."
         )
         return await query_llm(system_prompt, user_prompt + refuerzo, schema, _retry=True)
 
@@ -199,8 +203,8 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
             status_code=502,
             detail=(
                 "El modelo insistió en devolver contenido de plantilla en: "
-                f"{', '.join(hallazgos)}. No se generó el análisis para evitar "
-                "presentar texto genérico como si fuera análisis real del caso."
+                f"{', '.join(hallazgos)}. No se generó el análisis para evitar presentar texto "
+                "genérico como si fuera análisis real del caso."
             ),
         )
 

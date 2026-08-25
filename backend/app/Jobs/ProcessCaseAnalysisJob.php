@@ -43,11 +43,13 @@ class ProcessCaseAnalysisJob implements ShouldQueue
             $factRows = $this->factRows($data['facts'] ?? []);
             $this->analysis->facts()->delete();
             $this->analysis->facts()->createMany($factRows);
+
             $this->analysis->evidence()
                 ->where('origin', 'ia')
                 ->where('is_verified', false)
                 ->delete();
-            foreach ($this->evidenceRows($data['elements_analysis'] ?? []) as $evidenceRow) {
+
+            foreach ($this->evidenceRows($factRows, $data['elements_analysis'] ?? []) as $evidenceRow) {
                 $elementIds = $evidenceRow['element_ids'];
                 unset($evidenceRow['element_ids']);
 
@@ -91,26 +93,53 @@ class ProcessCaseAnalysisJob implements ShouldQueue
             ->all();
     }
 
-    private function evidenceRows(array $elementsAnalysis): array
+    /**
+     * Construye los registros de evidencia a partir de los hechos YA
+     * CLASIFICADOS por el Motor de Hechos (facts), no de la cita cruda
+     * dentro de elements_analysis. Solo los tipos EVIDENCIA, TESTIMONIO
+     * y DATO_TECNICO se convierten en registros de evidencia — una
+     * MANIFESTACION no es evidencia formal, solo el relato del
+     * declarante (distinción que exige la sección 7.2 del anteproyecto).
+     *
+     * Cada evidencia se vincula a los elementos jurídicos cuyo
+     * evidence_found coincide textualmente con el contenido del hecho,
+     * para no perder la relación con el Motor de Reglas.
+     */
+    private function evidenceRows(array $factRows, array $elementsAnalysis): array
     {
-        return collect($elementsAnalysis)
-            ->filter(fn (array $element): bool => filled($element['evidence_found'] ?? null))
-            ->groupBy(fn (array $element): string => $this->normalizedKey($element['evidence_found']))
-            ->map(function ($elements): array {
-                $firstElement = $elements->first();
-                $elementIds = $elements->pluck('element_id')->filter()->unique()->values()->all();
+        $tiposConsideradosEvidencia = ['EVIDENCIA', 'TESTIMONIO', 'DATO_TECNICO'];
+
+        return collect($factRows)
+            ->filter(fn (array $fact): bool => in_array($fact['information_type'], $tiposConsideradosEvidencia, true))
+            ->map(function (array $fact) use ($elementsAnalysis): array {
+                $elementIds = collect($elementsAnalysis)
+                    ->filter(fn (array $el): bool => filled($el['evidence_found'] ?? null)
+                        && str_contains(
+                            $this->normalizedKey($el['evidence_found']),
+                            $this->normalizedKey($fact['content'])
+                        ))
+                    ->pluck('element_id')
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
 
                 return [
                     'offense_element_id' => $elementIds[0] ?? null,
                     'element_ids' => $elementIds,
                     'origin' => 'ia',
-                    'evidence_type' => 'hecho_narrado',
-                    'source' => 'narrativa_de_la_carpeta',
+                    'evidence_type' => match ($fact['information_type']) {
+                        'EVIDENCIA' => 'documental_o_material',
+                        'TESTIMONIO' => 'testimonial',
+                        'DATO_TECNICO' => 'pericial',
+                        default => 'hecho_narrado',
+                    },
+                    'source' => $fact['source'] ?? 'narrativa_de_la_carpeta',
                     'evidence_date' => null,
-                    'related_fact' => trim($firstElement['evidence_found']),
+                    'related_fact' => trim($fact['content']),
                     'authenticity_status' => 'pendiente',
                     'valuation_status' => 'pendiente',
-                    'procedural_relation' => $this->proceduralRelation($firstElement['status'] ?? null),
+                    'procedural_relation' => $fact['procedural_relation'] ?? 'neutral',
                 ];
             })
             ->values()
@@ -120,15 +149,6 @@ class ProcessCaseAnalysisJob implements ShouldQueue
     private function normalizedKey(string $value): string
     {
         return mb_strtolower((string) preg_replace('/\s+/u', ' ', trim($value)));
-    }
-
-    private function proceduralRelation(?string $status): string
-    {
-        return match ($status) {
-            'ACREDITADO' => 'cargo',
-            'CONTRADICTORIO' => 'descargo',
-            default => 'neutral',
-        };
     }
 
     public function failed(Throwable $exception): void
