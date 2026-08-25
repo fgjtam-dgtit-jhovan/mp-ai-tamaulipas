@@ -47,7 +47,8 @@ class CaseController extends Controller
         // Buscar el análisis específico para esta carpeta usando expediente e ID_CARPETA
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
 
-        $latestAnalysis = CaseAnalysis::where('external_case_id', $externalCaseId)
+        $latestAnalysis = CaseAnalysis::with('evidence')
+            ->where('external_case_id', $externalCaseId)
             ->latest()
             ->first();
 

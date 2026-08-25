@@ -30,6 +30,7 @@ const form = useForm({
 const isSaving = ref(false);
 const elements = ref([]);
 const diligences = ref([]);
+const evidence = ref([]);
 let pollInterval = null;
 
 const isProcessing = computed(() => currentAnalysis.value?.status === 'draft');
@@ -48,6 +49,7 @@ const syncReview = () => {
         ...item,
         accepted: item.accepted ?? true,
     }));
+    evidence.value = JSON.parse(JSON.stringify(currentAnalysis.value?.evidence || []));
 };
 
 const stopPolling = () => {
@@ -92,6 +94,7 @@ const saveHumanReview = () => {
     router.put(route('case-analysis.update', currentAnalysis.value.id), {
         elements_status: elements.value,
         suggested_diligences: diligences.value,
+        evidence: evidence.value,
         status: 'reviewed',
     }, { onFinish: () => { isSaving.value = false; } });
 };
@@ -199,7 +202,7 @@ watch(currentAnalysis, syncReview);
                 </section>
 
                 <section v-else-if="hasResults" key="results" class="results-section">
-                    <div class="results-heading"><div><p class="state-kicker">RESULTADO DE INTELIGENCIA ARTIFICIAL</p><h2>Evaluación jurídica de la carpeta</h2></div><span class="result-confirmed"><CheckCircle2 class="size-4" /> Resultado disponible</span></div>
+                    <div class="results-heading"><div><p class="state-kicker">REVISIÓN MINISTERIAL</p><h2>Evaluación jurídica de la carpeta</h2></div><span class="result-confirmed"><CheckCircle2 class="size-4" /> Resultado disponible</span></div>
 
                     <div class="results-layout">
                         <article class="result-card result-card--elements">
@@ -226,10 +229,35 @@ watch(currentAnalysis, syncReview);
                             <article class="result-card">
                                 <div class="result-card__heading"><div><p class="card-kicker">03 · Plan de investigación</p><h3>Diligencias sugeridas</h3></div><FileText class="size-6 text-amber-600" /></div>
                                 <div class="diligence-list"><div v-for="(diligence, index) in diligences" :key="index" class="diligence-item" :class="{ 'diligence-item--off': !diligence.accepted }"><div><span>{{ diligence.legal_basis }}</span><strong>{{ diligence.action }}</strong><small>{{ diligence.purpose }}</small></div><button type="button" @click="toggleDiligence(index)">{{ diligence.accepted ? 'Incluida' : 'Omitida' }}</button></div><p v-if="!diligences.length" class="empty-result">No hay diligencias sugeridas.</p></div>
-                                <button type="button" class="save-button" :disabled="isSaving" @click="saveHumanReview">{{ isSaving ? 'Guardando revisión...' : 'Guardar revisión ministerial' }}</button>
                             </article>
                         </div>
                     </div>
+
+                    <article class="result-card evidence-card">
+                        <div class="result-card__heading"><div><p class="card-kicker">04 · Registro probatorio</p><h3>Motor evidencial</h3></div><FileText class="size-6 text-emerald-600" /></div>
+                        <p class="evidence-intro">La evidencia se registra como relevante potencial hasta que exista valoración ministerial.</p>
+                        <div v-if="evidence.length" class="evidence-table-wrap">
+                            <table class="evidence-table">
+                                <thead><tr><th>Tipo y origen</th><th>Fecha</th><th>Hecho relacionado</th><th>Autenticidad</th><th>Valoración</th><th>Relación</th></tr></thead>
+                                <tbody>
+                                    <tr v-for="item in evidence" :key="item.id">
+                                        <td><input v-model="item.evidence_type" aria-label="Tipo de evidencia" /><input v-model="item.source" aria-label="Origen de evidencia" /></td>
+                                        <td><input v-model="item.evidence_date" type="date" aria-label="Fecha de evidencia" /></td>
+                                        <td><textarea v-model="item.related_fact" rows="3" aria-label="Hecho relacionado"></textarea></td>
+                                        <td><select v-model="item.authenticity_status" aria-label="Estado de autenticidad"><option value="pendiente">Pendiente</option><option value="autentica">Auténtica</option><option value="no_autentica">No auténtica</option><option value="por_verificar">Por verificar</option></select></td>
+                                        <td><select v-model="item.valuation_status" aria-label="Estado de valoración"><option value="pendiente">Pendiente</option><option value="relevante">Relevante</option><option value="no_relevante">No relevante</option><option value="valorada">Valorada</option></select></td>
+                                        <td><select v-model="item.procedural_relation" aria-label="Relación procesal"><option value="cargo">Cargo</option><option value="descargo">Descargo</option><option value="neutral">Neutral</option></select></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div v-else class="empty-result">No hay evidencia estructurada registrada en este análisis.</div>
+                    </article>
+
+                    <section class="final-review" aria-labelledby="final-review-title">
+                        <div class="final-review__copy"><p class="state-kicker">CIERRE DE LA REVISIÓN</p><h3 id="final-review-title">Consolidar revisión ministerial</h3><p>Verifique los cambios realizados en la matriz jurídica, las diligencias y el registro evidencial antes de guardar.</p></div>
+                        <div class="final-review__action"><span>{{ elements.length }} elementos · {{ evidence.length }} evidencias · {{ diligences.length }} diligencias</span><button type="button" class="save-button" :disabled="isSaving" @click="saveHumanReview"><CheckCircle2 class="size-4" />{{ isSaving ? 'Guardando revisión...' : 'Guardar revisión ministerial' }}</button></div>
+                    </section>
                 </section>
 
                 <section v-else key="empty" class="state-panel state-panel--empty"><div class="empty-icon"><Sparkles class="size-7" /></div><p class="state-kicker">LISTO PARA COMENZAR</p><h2>Analiza esta carpeta con MP-IA</h2><p>La evaluación utilizará los elementos jurídicos y artículos vigentes asociados al delito.</p></section>
@@ -245,7 +273,7 @@ watch(currentAnalysis, syncReview);
 .back-link:hover { color: #087c5a; }
 .case-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 34px 38px; border-radius: 20px; background: #102521; color: white; box-shadow: 0 18px 40px rgba(16, 37, 33, .13); }
 .case-header__content h1 { margin: 10px 0 14px; font-size: clamp(26px, 4vw, 42px); line-height: 1.05; letter-spacing: -.03em; }
-.eyebrow, .case-header__meta, .section-heading, .result-card__heading, .results-heading, .element-topline, .element-actions, .processing-note, .result-confirmed, .header-status, .primary-button, .danger-button { display: flex; align-items: center; }
+.eyebrow, .case-header__meta, .section-heading, .result-card__heading, .results-heading, .element-topline, .element-actions, .processing-note, .result-confirmed, .header-status, .primary-button, .danger-button, .save-button { display: flex; align-items: center; }
 .eyebrow { gap: 8px; color: #67e0b4; font-size: 11px; font-weight: 800; letter-spacing: .17em; text-transform: uppercase; }
 .case-header__meta { flex-wrap: wrap; gap: 9px 16px; color: #b5cbc5; font-size: 13px; }
 .case-chip { padding: 5px 10px; border: 1px solid rgba(123, 221, 185, .28); border-radius: 999px; color: #83e8bf; font-weight: 800; }
@@ -254,6 +282,7 @@ watch(currentAnalysis, syncReview);
 .header-status--working { color: #f5d27a; border-color: rgba(245, 210, 122, .35); }
 .header-status--danger { color: #ffb0a6; border-color: rgba(255, 176, 166, .35); }
 .primary-button, .danger-button, .save-button { justify-content: center; gap: 8px; border: 0; border-radius: 9px; padding: 12px 17px; font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .2s, background .2s; }
+.save-button svg { flex: 0 0 auto; }
 .primary-button { background: #65dfb2; color: #102521; }
 .primary-button:hover { background: #8beaca; transform: translateY(-1px); }
 .primary-button:disabled, .save-button:disabled { cursor: wait; opacity: .6; }
@@ -265,8 +294,12 @@ watch(currentAnalysis, syncReview);
 .narrative-text { margin: 21px 0 0; padding: 16px 18px; border-left: 3px solid #69d9ae; border-radius: 0 9px 9px 0; background: #f7faf9; color: #536761; font-size: 13px; line-height: 1.8; white-space: pre-line; }.fact-list { display: grid; gap: 13px; margin: 22px 0 0; }.fact-list div { display: flex; justify-content: space-between; gap: 12px; padding-bottom: 11px; border-bottom: 1px solid #edf2f0; }.fact-list dt { color: #81948e; font-size: 11px; }.fact-list dd { margin: 0; color: #2d453e; font-size: 12px; font-weight: 800; text-align: right; }
 .state-panel { display: flex; flex-direction: column; align-items: center; margin-top: 18px; padding: 58px 24px; border: 1px solid #dce7e2; border-radius: 16px; background: #fff; text-align: center; }.state-panel h2 { margin: 8px 0 8px; font-size: 25px; letter-spacing: -.03em; }.state-panel > p:not(.state-kicker) { max-width: 530px; margin: 0; color: #6b7e78; font-size: 13px; line-height: 1.7; }.state-panel--processing { border-color: #a9e8ce; }.processing-icon { position: relative; display: flex; align-items: center; justify-content: center; width: 76px; height: 76px; margin-bottom: 22px; border-radius: 50%; background: #e5f8ef; color: #138c62; }.processing-icon span { position: absolute; inset: -7px; border: 1px solid #7edeb8; border-radius: 50%; animation: pulse-ring 1.8s infinite; }.progress-track { width: min(430px, 90%); height: 7px; margin-top: 26px; overflow: hidden; border-radius: 99px; background: #e8f0ed; }.progress-bar { width: 42%; height: 100%; border-radius: inherit; background: #29b984; animation: loading 2.4s ease-in-out infinite; }.processing-note { gap: 7px; margin-top: 13px; color: #91a29d; font-size: 11px; font-weight: 700; }.state-panel--failed { flex-direction: row; align-items: flex-start; gap: 17px; padding: 27px; border-color: #f1c4be; background: #fff5f3; text-align: left; }.failed-icon { display: flex; align-items: center; justify-content: center; width: 45px; height: 45px; flex: 0 0 auto; border-radius: 12px; background: #ffe1dc; color: #bc4437; }.failed-copy h2 { margin: 4px 0 6px; color: #6f2922; font-size: 20px; }.failed-copy > p:not(.state-kicker) { margin: 0; color: #984d44; font-size: 13px; line-height: 1.6; }.danger-button { margin-top: 17px; background: #af3f34; color: #fff; }.danger-button:hover { background: #8e3027; }.state-panel--empty { padding: 48px 24px; }.empty-icon { display: flex; align-items: center; justify-content: center; width: 53px; height: 53px; border-radius: 14px; background: #e5f8ef; color: #168965; margin-bottom: 15px; }
 .results-section { margin-top: 28px; }.results-heading { justify-content: space-between; gap: 16px; margin-bottom: 17px; }.results-heading h2 { margin: 0; font-size: 25px; letter-spacing: -.03em; }.result-confirmed { border-color: #b8e8d4; background: #effbf6; color: #168965; }.results-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(320px, .8fr); gap: 18px; }.result-card { padding: 24px; }.result-card__heading { justify-content: space-between; gap: 15px; margin-bottom: 20px; }.card-kicker { color: #83958f; }.element-list, .results-sidebar { display: grid; gap: 12px; }.element-item { padding: 17px; border: 1px solid #dce7e2; border-radius: 12px; }.element-item--alert { border-color: #f1d29a; background: #fffcf5; }.element-topline { justify-content: space-between; gap: 12px; }.element-topline > div { display: flex; align-items: center; gap: 10px; }.element-number { color: #91a49d; font-size: 11px; font-weight: 900; }.element-topline strong { font-size: 13px; }.status-badge { padding: 5px 8px; border: 1px solid; border-radius: 5px; font-size: 10px; font-weight: 900; text-transform: uppercase; }.status-success { border-color: #b7e8d2; background: #effbf5; color: #168965; }.status-warning { border-color: #f0d59e; background: #fff9e9; color: #a36a0a; }.status-danger { border-color: #f2c4be; background: #fff2f0; color: #a53b30; }.status-neutral { border-color: #d9e4e0; background: #f4f7f6; color: #637770; }.evidence, .missing { margin: 13px 0 0; color: #637770; font-size: 12px; line-height: 1.65; }.missing { color: #a36a0a; }.element-actions { gap: 7px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #edf2f0; }.element-actions span { margin-right: auto; color: #9aa9a4; font-size: 10px; font-weight: 700; }.element-actions button, .diligence-item button { border: 0; border-radius: 5px; padding: 6px 9px; background: #edf2f0; color: #64766f; font-size: 10px; font-weight: 800; cursor: pointer; }.element-actions button.active { background: #168965; color: #fff; }.bias-alert { display: flex; gap: 8px; padding: 10px; border: 1px solid #f1d59f; border-radius: 8px; background: #fff9e9; color: #98660e; font-size: 11px; line-height: 1.5; }.audit-block { margin-top: 17px; }.audit-block h4 { margin: 0 0 8px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }.audit-block--charge h4 { color: #168965; }.audit-block--defense h4 { color: #13759c; }.audit-block ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }.audit-block li { padding: 8px 10px; border-radius: 6px; color: #4e625b; font-size: 11px; line-height: 1.5; }.audit-block--charge li { background: #effaf5; }.audit-block--defense li { background: #eef8fc; }.audit-block .muted-item { color: #9aa9a4; background: #f5f7f6; }.diligence-list { display: grid; gap: 9px; }.diligence-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 11px; border: 1px solid #ccebdd; border-radius: 8px; background: #f2fbf7; }.diligence-item--off { border-color: #e0e7e4; background: #f7f9f8; opacity: .62; }.diligence-item span, .diligence-item strong, .diligence-item small { display: block; }.diligence-item span { margin-bottom: 4px; color: #168965; font-size: 9px; font-weight: 900; text-transform: uppercase; }.diligence-item strong { color: #344b43; font-size: 11px; line-height: 1.4; }.diligence-item small { margin-top: 4px; color: #7b8d87; font-size: 10px; line-height: 1.4; }.diligence-item button { flex: 0 0 auto; background: #168965; color: #fff; }.diligence-item--off button { background: #dfe7e3; color: #64766f; }.save-button { width: 100%; margin-top: 18px; background: #102521; color: #fff; }.save-button:hover { background: #1b3d34; }.empty-result { color: #8c9b95; font-size: 12px; }
+.evidence-card { margin-top: 18px; }.evidence-intro { margin: -8px 0 17px; color: #71837d; font-size: 12px; }.evidence-table-wrap { overflow-x: auto; }.evidence-table { width: 100%; min-width: 960px; border-collapse: collapse; }.evidence-table th { padding: 10px 9px; background: #f1f6f3; color: #60736c; font-size: 10px; font-weight: 900; letter-spacing: .08em; text-align: left; text-transform: uppercase; }.evidence-table td { padding: 9px; border-bottom: 1px solid #e8efec; vertical-align: top; }.evidence-table input, .evidence-table textarea, .evidence-table select { width: 100%; border: 1px solid #d5e2dc; border-radius: 5px; background: #fff; color: #29443b; font: inherit; font-size: 11px; }.evidence-table input, .evidence-table select { min-height: 32px; padding: 6px 7px; }.evidence-table textarea { min-width: 210px; padding: 7px; resize: vertical; }.evidence-table td:first-child { display: grid; min-width: 150px; gap: 6px; }.evidence-table input:focus, .evidence-table textarea:focus, .evidence-table select:focus { border-color: #39aa7d; outline: 2px solid #d8f3e7; }
+.review-flow { display: flex; align-items: center; gap: 12px; margin: 0 0 18px; padding: 15px 18px; border: 1px solid #dce7e2; border-radius: 12px; background: #fff; }.review-flow__step { display: flex; align-items: center; gap: 9px; min-width: 0; color: #9aa9a4; }.review-flow__step > span { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 1px solid #d9e4df; border-radius: 50%; font-size: 10px; font-weight: 900; }.review-flow__step div { display: grid; gap: 2px; }.review-flow__step strong { font-size: 11px; }.review-flow__step small { font-size: 10px; }.review-flow__step--complete { color: #168965; }.review-flow__step--complete > span { border-color: #8eddbb; background: #effbf5; }.review-flow__step--active { color: #263f37; }.review-flow__step--active > span { border-color: #168965; background: #168965; color: #fff; }.review-flow__line { height: 1px; flex: 1; min-width: 18px; background: #dce7e2; }.final-review { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 18px; padding: 24px 26px; border: 1px solid #9ddfc2; border-radius: 16px; background: #effbf6; }.final-review__copy { max-width: 630px; }.final-review__copy h3 { margin: 0 0 6px; font-size: 20px; }.final-review__copy > p:not(.state-kicker) { margin: 0; color: #607970; font-size: 12px; line-height: 1.6; }.final-review__action { display: grid; min-width: 265px; gap: 10px; }.final-review__action > span { display: flex; align-items: center; justify-content: flex-end; gap: 6px; color: #168965; font-size: 11px; font-weight: 800; }.final-review .save-button { width: 100%; margin-top: 0; background: #0e6d4e; }.final-review .save-button:hover { background: #09573f; }
+.final-review { border-color: #c5d4ce; border-radius: 8px; background: #f8faf9; box-shadow: 0 4px 12px rgba(36, 69, 60, .035); }.final-review__copy h3 { color: #1d332c; font-size: 18px; letter-spacing: -.01em; }.final-review__copy > p:not(.state-kicker) { color: #657771; }.final-review__action { min-width: 280px; }.final-review__action > span { justify-content: flex-end; color: #73847e; font-weight: 700; }.final-review .save-button { border-radius: 6px; background: #183f36; }.final-review .save-button:hover { background: #0f3029; }
 .fade-enter-active, .fade-leave-active { transition: opacity .3s ease, transform .3s ease; }.fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(8px); }
 @keyframes loading { 0% { transform: translateX(-120%); } 60%, 100% { transform: translateX(260%); } } @keyframes pulse-ring { 0%, 100% { transform: scale(.94); opacity: .7; } 50% { transform: scale(1.08); opacity: .2; } }
 @media (max-width: 900px) { .results-layout { grid-template-columns: 1fr; } }
 @media (max-width: 680px) { .analysis-shell { width: min(100% - 28px, 600px); padding-top: 20px; }.case-header { flex-direction: column; padding: 25px 22px; }.case-header__action { width: 100%; align-items: stretch; }.header-status { align-self: flex-start; }.overview-grid { grid-template-columns: 1fr; }.overview-card { padding: 20px; }.results-heading { align-items: flex-start; flex-direction: column; }.result-card { padding: 18px; }.state-panel--failed { flex-direction: column; }.element-topline { align-items: flex-start; flex-direction: column; }.element-actions { flex-wrap: wrap; }.element-actions span { width: 100%; }.element-actions span { margin-right: 0; } }
+@media (max-width: 680px) { .review-flow { align-items: stretch; flex-direction: column; gap: 9px; }.review-flow__line { width: 1px; height: 12px; flex: 0 0 auto; margin-left: 14px; }.final-review { align-items: stretch; flex-direction: column; padding: 20px; }.final-review__action { min-width: 0; }.final-review__action > span { justify-content: flex-start; } }
 </style>

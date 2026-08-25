@@ -61,7 +61,7 @@ class CaseAnalysisController extends Controller
 
     public function show(int $id): Response
     {
-        $analysis = CaseAnalysis::findOrFail($id);
+        $analysis = CaseAnalysis::with('evidence')->findOrFail($id);
 
         return Inertia::render('CaseAnalysis/Show', [
             'analysis' => $analysis,
@@ -99,6 +99,15 @@ class CaseAnalysisController extends Controller
         $validated = $request->validate([
             'elements_status' => 'required|array',
             'suggested_diligences' => 'required|array',
+            'evidence' => 'sometimes|array',
+            'evidence.*.id' => 'required|integer|exists:case_evidence,id',
+            'evidence.*.evidence_type' => 'required|string|max:100',
+            'evidence.*.source' => 'required|string|max:255',
+            'evidence.*.evidence_date' => 'nullable|date',
+            'evidence.*.related_fact' => 'required|string',
+            'evidence.*.authenticity_status' => 'required|string|in:pendiente,autentica,no_autentica,por_verificar',
+            'evidence.*.valuation_status' => 'required|string|in:pendiente,relevante,no_relevante,valorada',
+            'evidence.*.procedural_relation' => 'required|string|in:cargo,descargo,neutral',
             'status' => 'required|string|in:draft,reviewed,approved,rejected',
         ]);
 
@@ -110,6 +119,22 @@ class CaseAnalysisController extends Controller
             'status' => $validated['status'],
             'user_id' => Auth::id() ?? $analysis->user_id ?? 1,
         ]);
+
+        foreach ($validated['evidence'] ?? [] as $evidence) {
+            $analysis->evidence()->whereKey($evidence['id'])->update([
+                'evidence_type' => $evidence['evidence_type'],
+                'source' => $evidence['source'],
+                'evidence_date' => $evidence['evidence_date'] ?? null,
+                'related_fact' => $evidence['related_fact'],
+                'authenticity_status' => $evidence['authenticity_status'],
+                'valuation_status' => $evidence['valuation_status'],
+                'procedural_relation' => $evidence['procedural_relation'],
+                'origin' => 'usuario',
+                'is_verified' => true,
+                'reviewed_by' => Auth::id() ?? $analysis->user_id ?? 1,
+                'reviewed_at' => now(),
+            ]);
+        }
 
         return redirect()->back()->with('success', 'Revisión ministerial actualizada correctamente.');
     }

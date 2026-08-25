@@ -40,6 +40,12 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
             $data = $response;
 
+            $this->analysis->evidence()
+                ->where('origin', 'ia')
+                ->where('is_verified', false)
+                ->delete();
+            $this->analysis->evidence()->createMany($this->evidenceRows($data['elements_analysis'] ?? []));
+
             $this->analysis->update([
                 'elements_status' => $data['elements_analysis'] ?? [],
                 'objectivity_audit' => $data['objectivity_audit'] ?? [],
@@ -58,6 +64,34 @@ class ProcessCaseAnalysisJob implements ShouldQueue
         } catch (Throwable $e) {
             throw $e;
         }
+    }
+
+    private function evidenceRows(array $elementsAnalysis): array
+    {
+        return collect($elementsAnalysis)
+            ->filter(fn (array $element): bool => filled($element['evidence_found'] ?? null))
+            ->map(fn (array $element): array => [
+                'offense_element_id' => $element['element_id'] ?? null,
+                'origin' => 'ia',
+                'evidence_type' => 'hecho_narrado',
+                'source' => 'narrativa_de_la_carpeta',
+                'evidence_date' => null,
+                'related_fact' => $element['evidence_found'],
+                'authenticity_status' => 'pendiente',
+                'valuation_status' => 'pendiente',
+                'procedural_relation' => $this->proceduralRelation($element['status'] ?? null),
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function proceduralRelation(?string $status): string
+    {
+        return match ($status) {
+            'ACREDITADO' => 'cargo',
+            'CONTRADICTORIO' => 'descargo',
+            default => 'neutral',
+        };
     }
 
     public function failed(Throwable $exception): void
