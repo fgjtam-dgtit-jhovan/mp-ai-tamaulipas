@@ -12,12 +12,24 @@ async def _clasificar_hechos(narrative: str) -> list:
     más que esto.
 
     CLASIFICACIONES PERMITIDAS:
-    - MANIFESTACION: lo que una persona afirma o declara (ej. "yo iba caminando cuando...").
-    - EVIDENCIA: objeto, documento, fotografía, video o registro físico mencionado.
+    - MANIFESTACION: la percepción, interpretación o afirmación SUBJETIVA de una persona sobre lo que
+      pasó (ej. "yo iba caminando cuando...", "escuché un disparo", "creo que fue él").
+    - EVIDENCIA: cualquier objeto físico, rastro material, documento, fotografía, video o registro
+      mencionado — AUNQUE se conozca a través del relato de alguien. La prueba es: ¿describe un objeto
+      o rastro que podría exhibirse o peritarse? Ejemplos que SIEMPRE son EVIDENCIA sin importar quién
+      lo menciona: manchas de sangre, casquillos, huellas, impactos de bala en superficies, armas,
+      prendas, fotografías, videos, documentos.
     - TESTIMONIO: declaración atribuida a un tercero distinto del declarante principal.
     - DATO_TECNICO: dictamen, medición, resultado o informe técnico/pericial.
     - HIPOTESIS: posibilidad o explicación no confirmada ("podría tratarse de...").
     - CONCLUSION: afirmación presentada como resultado o comprobación ("se comprobó que...").
+
+    REGLA CLAVE PARA NO CONFUNDIR MANIFESTACION CON EVIDENCIA:
+    El origen del dato (quién lo dice) NO determina la clasificación — lo que importa es LA NATURALEZA
+    de lo descrito. Si el denunciante describe QUE VIO manchas de sangre y casquillos, ese fragmento se
+    clasifica como EVIDENCIA (porque describe objetos materiales), no como MANIFESTACION, aunque toda la
+    narrativa provenga de su declaración. Reserva MANIFESTACION para la parte subjetiva/interpretativa
+    del relato (lo que la persona cree, siente, o afirma que ocurrió sin describir un objeto concreto).
 
     REGLAS ESTRICTAS:
     1. Extrae SOLO fragmentos que aparecen literalmente en la narrativa. No agregues información.
@@ -35,12 +47,14 @@ async def _clasificar_hechos(narrative: str) -> list:
     EJEMPLO DE FORMATO (caso ficticio de referencia — NO copies estos valores):
 
     Narrativa de ejemplo: "...el denunciante manifestó que vio al imputado tomar el teléfono de
-    la mesa. Un vecino declaró haber escuchado gritos. Se anexa fotografía del lugar..."
+    la mesa. Un vecino declaró haber escuchado gritos. El denunciante señaló que se encuentran
+    manchas de sangre en el piso de la cocina. Se anexa fotografía del lugar..."
 
     {{
       "facts": [
         {{"information_type": "MANIFESTACION", "content": "vio al imputado tomar el teléfono de la mesa", "source": "declaración del denunciante", "procedural_relation": "cargo", "is_confirmed": true}},
         {{"information_type": "TESTIMONIO", "content": "escuchó gritos", "source": "testimonio de vecino", "procedural_relation": "cargo", "is_confirmed": true}},
+        {{"information_type": "EVIDENCIA", "content": "manchas de sangre en el piso de la cocina", "source": "declaración del denunciante", "procedural_relation": "cargo", "is_confirmed": true}},
         {{"information_type": "EVIDENCIA", "content": "fotografía del lugar de los hechos", "source": "anexo fotográfico", "procedural_relation": "neutral", "is_confirmed": true}}
       ]
     }}
@@ -54,7 +68,12 @@ async def _clasificar_hechos(narrative: str) -> list:
     '''
 
     result = await query_llm(system_prompt, user_prompt, FactsOnlySchema)
-    return result["facts"]
+
+    facts = result["facts"]
+    for idx, fact in enumerate(facts):
+        fact["id"] = f"f{idx}"
+
+    return facts
 
 
 # ── FASE 1b: SOLO evaluar elementos del tipo penal ──────────────────
@@ -73,8 +92,9 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
     3. CONTRADICTORIO solo si algún hecho de la lista expresa explícitamente lo contrario del elemento.
     4. FALTANTE cuando ningún hecho de la lista cubre el elemento.
     5. evidence_found debe ser el texto EXACTO del hecho de la lista que usaste; nunca una definición legal.
-    6. supporting_fact_index debe ser la posición (empezando en 0) de ese mismo hecho dentro de la lista.
-       Si status es FALTANTE, deja supporting_fact_index en null.
+    6. supporting_fact_id debe ser el valor EXACTO del campo "id" (ej. "f0", "f1") del hecho de la
+       lista que usaste. Cada hecho en la lista trae su propio "id" — cópialo tal cual, nunca inventes
+       uno nuevo. Si status es FALTANTE, deja supporting_fact_id en null.
     7. missing_reason debe ser específica de ESTE caso — nunca una frase genérica reutilizable en otro caso.
     8. Cada hecho de la lista trae un campo is_confirmed. Si is_confirmed es false, NO lo uses para
        marcar ACREDITADO — márcalo FALTANTE y explica en missing_reason que la información disponible
@@ -83,11 +103,14 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
        hecho realmente contenga información específica para AMBOS por separado. Si dos elementos solo
        tienen en común un hecho genérico o incierto, revisa con más cuidado si de verdad aplica a cada
        uno o si en realidad falta información específica para alguno.
-    10. PROHIBIDO ABSOLUTO: nunca escribas la palabra "FACTS", "lista de hechos", ni ningún nombre de
+    10. IMPORTANTE: revisa TODOS los hechos de la lista contra CADA elemento, uno por uno — no te
+        detengas en el primer hecho que parezca relevante ni ignores hechos que están más abajo en la
+        lista. Un hecho que aparece a mitad o al final de la lista puede ser el que sustenta un elemento.
+    11. PROHIBIDO ABSOLUTO: nunca escribas la palabra "FACTS", "lista de hechos", ni ningún nombre de
         variable o etiqueta técnica dentro de evidence_found o missing_reason — esos campos deben leerse
         como una oración normal sobre EL CASO, nunca mencionar la estructura de datos que estás usando.
-    11. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
-    12. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
+    12. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
+    13. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
     '''
 
     user_prompt = f'''
