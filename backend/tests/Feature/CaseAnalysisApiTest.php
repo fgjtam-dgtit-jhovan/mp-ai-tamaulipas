@@ -118,13 +118,13 @@ class CaseAnalysisApiTest extends TestCase
         $service = $this->mock(CaseAnalysisService::class);
         $service->shouldReceive('runAnalysis')->once()->andReturn([
             'facts' => [
-                ['information_type' => 'EVIDENCIA', 'content' => 'CUENTA NUMERO 10501492731', 'source' => 'narrativa', 'procedural_relation' => 'cargo'],
-                ['information_type' => 'EVIDENCIA', 'content' => 'CUENTA   NUMERO 10501492731', 'source' => 'narrativa', 'procedural_relation' => 'cargo'],
+                ['id' => 'fact-1', 'information_type' => 'EVIDENCIA', 'content' => 'CUENTA NUMERO 10501492731', 'source' => 'narrativa', 'procedural_relation' => 'cargo'],
+                ['id' => 'fact-2', 'information_type' => 'EVIDENCIA', 'content' => 'CUENTA   NUMERO 10501492731', 'source' => 'narrativa', 'procedural_relation' => 'cargo'],
             ],
             'elements_analysis' => [
-                ['element_id' => 1, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA NUMERO 10501492731'],
-                ['element_id' => 2, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA   NUMERO 10501492731'],
-                ['element_id' => 3, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA NUMERO 10501492731'],
+                ['element_id' => 1, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA NUMERO 10501492731', 'supporting_fact_index' => 0],
+                ['element_id' => 2, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA   NUMERO 10501492731', 'supporting_fact_index' => 0],
+                ['element_id' => 3, 'status' => 'ACREDITADO', 'evidence_found' => 'CUENTA NUMERO 10501492731', 'supporting_fact_index' => 1],
             ],
             'objectivity_audit' => [],
             'suggested_diligences' => [],
