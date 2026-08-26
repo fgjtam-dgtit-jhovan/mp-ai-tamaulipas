@@ -8,8 +8,10 @@ import {
     CheckCircle2,
     CircleAlert,
     FileText,
+    Gauge,
     Gavel,
     LoaderCircle,
+    ListChecks,
     MapPin,
     RefreshCw,
     Scale,
@@ -23,6 +25,7 @@ const props = defineProps({
 });
 
 const currentAnalysis = computed(() => props.latestAnalysis || props.analysis);
+const hypothesis = computed(() => currentAnalysis.value?.hypotheses?.[0] || null);
 const form = useForm({
     expediente: props.caseData?.EXPEDIENTE || '',
     id_carpeta: props.caseData?.ID_CARPETA || '',
@@ -112,6 +115,20 @@ const formatStatus = (status) => ({
     FALTANTE: 'Faltante',
     CONTRADICTORIO: 'Contradictorio',
 }[status] || status);
+
+const hypothesisStatusLabel = computed(() => ({
+    completa: 'Hipótesis completa',
+    incompleta: 'Hipótesis incompleta',
+    con_contradicciones: 'Con contradicciones',
+    insuficiente: 'Configuración insuficiente',
+}[hypothesis.value?.status] || 'Sin evaluación'));
+
+const hypothesisStatusClass = computed(() => ({
+    completa: 'hypothesis-status--complete',
+    incompleta: 'hypothesis-status--incomplete',
+    con_contradicciones: 'hypothesis-status--danger',
+    insuficiente: 'hypothesis-status--neutral',
+}[hypothesis.value?.status] || 'hypothesis-status--neutral'));
 
 onMounted(() => {
     syncReview();
@@ -205,6 +222,37 @@ watch(currentAnalysis, syncReview);
 
                 <section v-else-if="hasResults" key="results" class="results-section">
                     <div class="results-heading"><div><p class="state-kicker">REVISIÓN MINISTERIAL</p><h2>Evaluación jurídica de la carpeta</h2></div><span class="result-confirmed"><CheckCircle2 class="size-4" /> Resultado disponible</span></div>
+
+                    <article v-if="hypothesis" class="hypothesis-summary" aria-labelledby="hypothesis-summary-title">
+                        <div class="hypothesis-summary__heading">
+                            <div class="result-card__heading">
+                                <span class="icon-box icon-box--green"><Gauge class="size-5" /></span>
+                                <div><p class="card-kicker">Motor de hipótesis</p><h3 id="hypothesis-summary-title">Completitud de la hipótesis</h3></div>
+                            </div>
+                            <span class="hypothesis-status" :class="hypothesisStatusClass">{{ hypothesisStatusLabel }}</span>
+                        </div>
+                        <div class="hypothesis-summary__body">
+                            <div class="hypothesis-score">
+                                <strong>{{ Number(hypothesis.completeness_percentage || 0).toFixed(2) }}%</strong>
+                                <span>elementos requeridos acreditados</span>
+                                <div class="hypothesis-progress" role="progressbar" :aria-valuenow="hypothesis.completeness_percentage || 0" aria-valuemin="0" aria-valuemax="100"><span :style="{ width: `${Math.min(100, Math.max(0, Number(hypothesis.completeness_percentage || 0)))}%` }"></span></div>
+                            </div>
+                            <div class="hypothesis-metrics">
+                                <div><strong>{{ hypothesis.accredited_count }}</strong><span>Acreditados</span></div>
+                                <div><strong>{{ hypothesis.missing_count }}</strong><span>Faltantes</span></div>
+                                <div><strong>{{ hypothesis.contradictory_count }}</strong><span>Contradictorios</span></div>
+                                <div><strong>{{ hypothesis.required_elements }}</strong><span>Requeridos</span></div>
+                            </div>
+                            <div class="hypothesis-conclusion" :class="{ 'hypothesis-conclusion--warning': !hypothesis.can_conclude }">
+                                <ListChecks class="size-5 shrink-0" />
+                                <div><strong>{{ hypothesis.can_conclude ? 'La hipótesis puede pasar a revisión humana' : 'No puedo concluir' }}</strong><p>{{ hypothesis.can_conclude ? 'Todos los elementos requeridos aparecen acreditados y no hay contradicciones registradas.' : 'La información disponible no permite una conclusión completa. Revise los elementos pendientes antes de continuar.' }}</p></div>
+                            </div>
+                        </div>
+                        <div v-if="hypothesis.missing_required_elements?.length" class="hypothesis-missing">
+                            <p><b>Elementos requeridos por revisar</b></p>
+                            <ul><li v-for="item in hypothesis.missing_required_elements" :key="item.element_id"><span>{{ item.name || `Elemento #${item.element_id}` }}</span><small>{{ item.reason || (item.status === 'CONTRADICTORIO' ? 'Presenta información contradictoria.' : 'No hay información suficiente.') }}</small></li></ul>
+                        </div>
+                    </article>
 
                     <div class="results-layout">
                         <article class="result-card result-card--elements">
@@ -319,4 +367,28 @@ watch(currentAnalysis, syncReview);
 @media (max-width: 680px) { .analysis-shell { width: min(100% - 28px, 600px); padding-top: 20px; }.case-header { flex-direction: column; padding: 25px 22px; }.case-header__action { width: 100%; align-items: stretch; }.header-status { align-self: flex-start; }.overview-grid { grid-template-columns: 1fr; }.overview-card { padding: 20px; }.results-heading { align-items: flex-start; flex-direction: column; }.result-card { padding: 18px; }.state-panel--failed { flex-direction: column; }.element-topline { align-items: flex-start; flex-direction: column; }.element-actions { flex-wrap: wrap; }.element-actions span { width: 100%; }.element-actions span { margin-right: 0; } }
 @media (max-width: 680px) { .review-flow { align-items: stretch; flex-direction: column; gap: 9px; }.review-flow__line { width: 1px; height: 12px; flex: 0 0 auto; margin-left: 14px; }.final-review { align-items: stretch; flex-direction: column; padding: 20px; }.final-review__action { min-width: 0; }.final-review__action > span { justify-content: flex-start; } }
 @media (max-width: 680px) { .facts-list { grid-template-columns: 1fr; } }
+.hypothesis-summary { margin-bottom: 18px; padding: 22px 24px; border: 1px solid #b9e4d1; border-radius: 16px; background: #f8fdfb; }
+.hypothesis-summary__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.hypothesis-summary__heading .result-card__heading { justify-content: flex-start; margin-bottom: 0; }
+.hypothesis-status { padding: 6px 9px; border: 1px solid; border-radius: 6px; font-size: 10px; font-weight: 900; text-transform: uppercase; }
+.hypothesis-status--complete { border-color: #a7dfc2; background: #e9f9f0; color: #15764f; }
+.hypothesis-status--incomplete { border-color: #f0d59e; background: #fff9e9; color: #a36a0a; }
+.hypothesis-status--danger { border-color: #f2c4be; background: #fff2f0; color: #a53b30; }
+.hypothesis-status--neutral { border-color: #d9e4e0; background: #f4f7f6; color: #637770; }
+.hypothesis-summary__body { display: grid; grid-template-columns: minmax(190px, .9fr) minmax(260px, 1.2fr) minmax(280px, 1.5fr); gap: 20px; align-items: center; margin-top: 22px; }
+.hypothesis-score strong { display: block; color: #116d4d; font-size: 32px; letter-spacing: -.04em; }
+.hypothesis-score span, .hypothesis-metrics span { display: block; color: #71837d; font-size: 11px; }
+.hypothesis-progress { height: 8px; margin-top: 12px; overflow: hidden; border-radius: 99px; background: #dcece5; }
+.hypothesis-progress span { display: block; height: 100%; border-radius: inherit; background: #2baa79; transition: width .35s ease; }
+.hypothesis-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.hypothesis-metrics div { padding: 10px 12px; border: 1px solid #dcebe4; border-radius: 8px; background: #fff; }
+.hypothesis-metrics strong { display: block; color: #29483d; font-size: 18px; }
+.hypothesis-conclusion { display: flex; gap: 10px; padding: 14px; border: 1px solid #b9e4d1; border-radius: 9px; background: #eaf9f1; color: #16734f; }
+.hypothesis-conclusion--warning { border-color: #f0d59e; background: #fff9e9; color: #91600c; }
+.hypothesis-conclusion strong { font-size: 12px; }.hypothesis-conclusion p { margin: 4px 0 0; color: #657a72; font-size: 11px; line-height: 1.5; }
+.hypothesis-missing { margin-top: 18px; padding-top: 15px; border-top: 1px solid #dcebe4; }.hypothesis-missing p { margin: 0 0 8px; color: #526961; font-size: 11px; }
+.hypothesis-missing ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.hypothesis-missing li { display: grid; gap: 3px; padding: 9px 11px; border-left: 3px solid #e5b95e; background: #fffdf7; }.hypothesis-missing li span { color: #5a4b2d; font-size: 11px; font-weight: 800; }.hypothesis-missing li small { color: #8c7a55; font-size: 10px; line-height: 1.4; }
+@media (max-width: 900px) { .hypothesis-summary__body { grid-template-columns: 1fr 1fr; }.hypothesis-conclusion { grid-column: 1 / -1; } }
+@media (max-width: 680px) { .hypothesis-summary { padding: 18px; }.hypothesis-summary__heading { flex-direction: column; }.hypothesis-summary__body { grid-template-columns: 1fr; }.hypothesis-conclusion { grid-column: auto; }.hypothesis-missing ul { grid-template-columns: 1fr; } }
 </style>

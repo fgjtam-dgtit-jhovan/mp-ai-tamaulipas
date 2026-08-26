@@ -44,4 +44,9 @@ class CaseAnalysis extends Model
     {
         return $this->hasMany(CaseFact::class, 'case_analysis_id');
     }
+
+    public function hypotheses(): HasMany
+    {
+        return $this->hasMany(CaseHypothesis::class, 'case_analysis_id');
+    }
 }

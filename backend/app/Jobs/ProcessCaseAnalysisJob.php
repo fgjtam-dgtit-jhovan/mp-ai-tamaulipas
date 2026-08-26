@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\CaseAnalysis;
 use App\Services\CaseAnalysisService;
+use App\Services\HypothesisEngine;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -29,7 +30,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
         public string $factNarrative
     ) {}
 
-    public function handle(CaseAnalysisService $aiClient): void
+    public function handle(CaseAnalysisService $aiClient, HypothesisEngine $hypothesisEngine): void
     {
         try {
             $response = $aiClient->runAnalysis(
@@ -66,6 +67,11 @@ class ProcessCaseAnalysisJob implements ShouldQueue
                 'error_message' => null,
             ]);
 
+            // Motor de Hipótesis: agrega el estado de completitud sobre el
+            // análisis de elementos ya persistido.
+            $hypothesisData = $hypothesisEngine->evaluate($this->analysis, $data['elements_analysis'] ?? []);
+            $this->analysis->hypotheses()->delete();
+            $this->analysis->hypotheses()->create($hypothesisData);
         } catch (\UnexpectedValueException|\InvalidArgumentException $exception) {
             $this->analysis->update([
                 'status' => 'rejected',
