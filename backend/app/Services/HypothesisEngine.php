@@ -15,38 +15,73 @@ class HypothesisEngine
      */
     public function evaluate(CaseAnalysis $analysis, array $elementsAnalysis): array
     {
-        $elementIds = collect($elementsAnalysis)->pluck('element_id')->filter()->unique()->values();
-        $elements = OffenseElement::whereIn('id', $elementIds)->get()->keyBy('id');
+        // Catálogo REAL de elementos del delito — no los que el LLM
+        // decidió regresar. Así detectamos si el LLM omitió evaluar
+        // algún elemento por completo, en vez de asumir silenciosamente
+        // que "no evaluado" equivale a "no existe".
+        $catalogElements = OffenseElement::where('external_offense_id', $analysis->external_offense_id)
+            ->get()
+            ->keyBy('id');
 
-        $total = $elements->count();
-        $required = $elements->where('is_required', true)->count();
+        $total = $catalogElements->count();
+        $required = $catalogElements->where('is_required', true)->count();
+
+        // Si el LLM regresó el mismo element_id dos veces, solo se
+        // considera la primera aparición — evita inflar conteos.
+        $analysisByElement = collect($elementsAnalysis)
+            ->filter(fn (array $row) => isset($row['element_id']))
+            ->unique('element_id')
+            ->keyBy('element_id');
 
         $accreditedCount = 0;
         $missingCount = 0;
         $contradictoryCount = 0;
+        $notEvaluatedCount = 0;
         $accreditedRequired = 0;
+        $requiredContradictions = 0;
         $missingRequired = [];
+        $notEvaluatedRequired = [];
 
-        foreach ($elementsAnalysis as $row) {
-            $element = $elements->get($row['element_id'] ?? null);
-            $isRequired = $element?->is_required ?? false;
+        foreach ($catalogElements as $elementId => $element) {
+            $row = $analysisByElement->get($elementId);
+            $isRequired = (bool) $element->is_required;
 
-            match ($row['status'] ?? null) {
+            if (! $row) {
+                // Elemento del catálogo que el LLM nunca evaluó. Se
+                // reporta aparte de FALTANTE: esto es una falla del
+                // pipeline de análisis, no un vacío sustantivo del caso.
+                $notEvaluatedCount++;
+                if ($isRequired) {
+                    $notEvaluatedRequired[] = [
+                        'element_id' => $elementId,
+                        'name' => $element->name,
+                    ];
+                }
+                continue;
+            }
+
+            $status = $row['status'] ?? null;
+
+            match ($status) {
                 'ACREDITADO' => $accreditedCount++,
                 'FALTANTE' => $missingCount++,
                 'CONTRADICTORIO' => $contradictoryCount++,
-                default => null,
+                default => $notEvaluatedCount++,
             };
 
-            if (($row['status'] ?? null) === 'ACREDITADO' && $isRequired) {
+            if ($status === 'ACREDITADO' && $isRequired) {
                 $accreditedRequired++;
             }
 
-            if (in_array($row['status'] ?? null, ['FALTANTE', 'CONTRADICTORIO'], true) && $isRequired) {
+            if ($status === 'CONTRADICTORIO' && $isRequired) {
+                $requiredContradictions++;
+            }
+
+            if (in_array($status, ['FALTANTE', 'CONTRADICTORIO'], true) && $isRequired) {
                 $missingRequired[] = [
-                    'element_id' => $row['element_id'],
-                    'name' => $element?->name,
-                    'status' => $row['status'],
+                    'element_id' => $elementId,
+                    'name' => $element->name,
+                    'status' => $status,
                     'reason' => $row['missing_reason'] ?? null,
                 ];
             }
@@ -56,12 +91,14 @@ class HypothesisEngine
             ? round(($accreditedRequired / $required) * 100, 2)
             : 0.0;
 
-        $hasContradictions = $contradictoryCount > 0;
-        $isComplete = $completeness === 100.0 && ! $hasContradictions;
+        $hasRequiredContradictions = $requiredContradictions > 0;
+        $hasUnevaluatedRequired = count($notEvaluatedRequired) > 0;
+        $isComplete = $required > 0 && $accreditedRequired === $required;
 
         $status = match (true) {
             $required === 0 => 'insuficiente', // el delito no tiene elementos obligatorios configurados
-            $hasContradictions => 'con_contradicciones',
+            $hasUnevaluatedRequired => 'evaluacion_incompleta', // falla de pipeline, no del caso
+            $hasRequiredContradictions => 'con_contradicciones',
             $isComplete => 'completa',
             default => 'incompleta',
         };
@@ -73,10 +110,14 @@ class HypothesisEngine
             'accredited_count' => $accreditedCount,
             'missing_count' => $missingCount,
             'contradictory_count' => $contradictoryCount,
+            'not_evaluated_count' => $notEvaluatedCount,
             'completeness_percentage' => $completeness,
             'status' => $status,
+            // can_conclude EXCLUSIVAMENTE cuando de verdad no falta nada
+            // por evaluar — nunca cuando el pipeline dejó huecos.
             'can_conclude' => $status === 'completa',
             'missing_required_elements' => $missingRequired,
+            'not_evaluated_required_elements' => $notEvaluatedRequired,
         ];
     }
 }

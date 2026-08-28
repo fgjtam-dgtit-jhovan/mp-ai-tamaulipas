@@ -29,7 +29,8 @@ return new class extends Migration
             $table->boolean('can_conclude')->default(false);
 
             $table->json('missing_required_elements')->nullable();
-
+            $table->unsignedSmallInteger('not_evaluated_count')->default(0)->after('contradictory_count');
+            $table->json('not_evaluated_required_elements')->nullable()->after('missing_required_elements');
             $table->timestamps();
 
             $table->index(['case_analysis_id', 'external_offense_id']);

@@ -21,6 +21,8 @@ class CaseHypothesis extends Model
         'status',
         'can_conclude',
         'missing_required_elements',
+        'not_evaluated_count',
+        'not_evaluated_required_elements',
     ];
 
     protected $casts = [
@@ -29,6 +31,8 @@ class CaseHypothesis extends Model
         'completeness_percentage' => 'decimal:2',
         'can_conclude' => 'boolean',
         'missing_required_elements' => 'array',
+        'not_evaluated_count' => 'integer',
+        'not_evaluated_required_elements' => 'array',
     ];
 
     public function analysis(): BelongsTo
