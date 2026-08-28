@@ -52,11 +52,12 @@ class ElementStatus(BaseModel):
     status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
     evidence_found: Optional[str] = Field(None, max_length=300, description="Cita literal muy breve si está ACREDITADO")
     missing_reason: Optional[str] = Field(None, max_length=300, description="Razón breve y específica si el status es FALTANTE")
-    supporting_fact_index: Optional[int] = Field(
+    supporting_fact_id: Optional[str] = Field(
         None,
         description=(
-            "Si status es ACREDITADO o CONTRADICTORIO, el ÍNDICE (empezando en 0) del hecho de la "
-            "lista FACTS que sustenta esta decisión. null si status es FALTANTE."
+            "Si status es ACREDITADO o CONTRADICTORIO, el valor EXACTO del campo 'id' "
+            "(ej. 'f0', 'f1') del hecho de la lista que sustenta esta decisión. "
+            "null si status es FALTANTE."
         ),
     )
 

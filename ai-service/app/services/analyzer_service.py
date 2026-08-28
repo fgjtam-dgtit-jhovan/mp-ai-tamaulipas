@@ -70,6 +70,11 @@ async def _clasificar_hechos(narrative: str) -> list:
     result = await query_llm(system_prompt, user_prompt, FactsOnlySchema)
 
     facts = result["facts"]
+    # Id estable asignado por Python (NO por el LLM), inmediatamente
+    # después de recibir la respuesta. Todo lo que ocurra después en el
+    # pipeline (filtrado, deduplicado, persistencia) referencia este id,
+    # nunca la posición del array — evita el bug de desalineación cuando
+    # Laravel elimina duplicados con ->unique()->values().
     for idx, fact in enumerate(facts):
         fact["id"] = f"f{idx}"
 
@@ -118,14 +123,14 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
 
     Hechos disponibles para este caso ficticio:
     [
-      {{"information_type": "MANIFESTACION", "content": "tomó el teléfono celular marca Samsung de la mesa del comedor"}},
-      {{"information_type": "MANIFESTACION", "content": "ocurrió mientras la víctima dormía"}}
+      {{"id": "f0", "information_type": "MANIFESTACION", "content": "tomó el teléfono celular marca Samsung de la mesa del comedor"}},
+      {{"id": "f1", "information_type": "MANIFESTACION", "content": "ocurrió mientras la víctima dormía"}}
     ]
 
     {{
       "elements_analysis": [
-        {{"element_id": 1, "status": "ACREDITADO", "evidence_found": "tomó el teléfono celular marca Samsung de la mesa del comedor", "missing_reason": null, "supporting_fact_index": 0}},
-        {{"element_id": 2, "status": "FALTANTE", "evidence_found": null, "missing_reason": "No se menciona quién es el propietario del teléfono", "supporting_fact_index": null}}
+        {{"element_id": 1, "status": "ACREDITADO", "evidence_found": "tomó el teléfono celular marca Samsung de la mesa del comedor", "missing_reason": null, "supporting_fact_id": "f0"}},
+        {{"element_id": 2, "status": "FALTANTE", "evidence_found": null, "missing_reason": "No se menciona quién es el propietario del teléfono", "supporting_fact_id": null}}
       ]
     }}
 
@@ -136,7 +141,7 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
     DELITO:
     {offense_name or f"ID {offense_id}"}
 
-    HECHOS DISPONIBLES (usa la posición de esta lista para supporting_fact_index):
+    HECHOS DISPONIBLES (usa el campo "id" de cada hecho para supporting_fact_id):
     {json.dumps(facts, ensure_ascii=False)}
 
     MARCO JURÍDICO RECUPERADO DE QDRANT:
@@ -221,11 +226,12 @@ async def analyze_case_file(
     offense_name: str | None,
     elements: list,
     legal_articles: list,
+    fact_date: str | None = None,
 ):
     if not elements:
         raise ValueError(f'El delito {offense_id} no tiene elementos jurídicos configurados.')
 
-    legal_context = await search_legal_articles(query=narrative, offense_id=offense_id, limit=5)
+    legal_context = await search_legal_articles(query=narrative, offense_id=offense_id, limit=5, as_of_date=fact_date)
 
     facts = await _clasificar_hechos(narrative)
 

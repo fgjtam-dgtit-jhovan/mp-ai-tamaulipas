@@ -12,6 +12,7 @@ class CaseAnalysis extends Model
     protected $fillable = [
         'external_case_id',
         'external_offense_id',
+        'fact_date',
         'user_id',
         'facts_breakdown',
         'elements_status',
@@ -28,6 +29,7 @@ class CaseAnalysis extends Model
         'suggested_diligences' => 'array',
         'external_offense_id' => 'integer',
         'user_id' => 'integer',
+        'fact_date' => 'date',
     ];
 
     public function user()

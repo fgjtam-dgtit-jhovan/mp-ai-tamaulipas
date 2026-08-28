@@ -15,6 +15,7 @@ class CaseFact extends Model
         'content',
         'source',
         'procedural_relation',
+        'is_confirmed',
         'case_evidence_id',
     ];
 

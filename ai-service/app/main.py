@@ -36,6 +36,7 @@ class AnalysisRequest(BaseModel):
     external_offense_id: int
     offense_name: Optional[str] = None
     fact_narrative: str
+    fact_date: Optional[str] = None
     elements: List[dict]
     legal_articles: List[dict] = Field(default_factory=list)
 
@@ -49,6 +50,7 @@ async def analyze_case(payload: AnalysisRequest):
             offense_name=payload.offense_name,
             elements=payload.elements,
             legal_articles=payload.legal_articles,
+            fact_date=payload.fact_date,
         )
         return {"status": "success", "data": result}
     except HTTPException:

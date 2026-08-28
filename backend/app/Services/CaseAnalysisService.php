@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
 
 class CaseAnalysisService
 {
-    public function runAnalysis(string $externalCaseId, int $externalOffenseId, string $narrative): array
+    public function runAnalysis(string $externalCaseId, int $externalOffenseId, string $narrative, ?\Carbon\Carbon $factDate = null): array
     {
         $baseUrl = config('services.mpia_engine.url');
 
@@ -35,6 +35,7 @@ class CaseAnalysisService
             'external_offense_id' => $externalOffenseId,
             'offense_name' => $crime?->DLTO,
             'fact_narrative' => $narrative,
+            'fact_date' => $factDate?->toDateString(),
             'elements' => $elements->map(fn (OffenseElement $element): array => [
                 'id' => $element->id,
                 'name' => $element->name,

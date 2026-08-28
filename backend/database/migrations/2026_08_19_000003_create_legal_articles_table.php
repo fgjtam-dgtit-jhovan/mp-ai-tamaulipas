@@ -23,6 +23,7 @@ return new class extends Migration
             $table->string('fraction')->nullable();      // Ej. "II" — null si el artículo no tiene fracciones
             $table->text('content');                     // texto completo del artículo/fracción
             $table->unsignedInteger('display_order')->default(0); // orden de lectura dentro del documento
+            $table->boolean('is_verified')->default(true)->after('content');
             $table->timestamps();
 
             $table->index(['legal_version_id', 'article_number']);

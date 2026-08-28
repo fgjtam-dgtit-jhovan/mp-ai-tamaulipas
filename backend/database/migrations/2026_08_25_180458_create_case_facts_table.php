@@ -18,6 +18,7 @@ return new class extends Migration
             $table->text('content');
             $table->string('source')->default('narrativa_de_la_carpeta');
             $table->string('procedural_relation')->default('neutral');
+            $table->boolean('is_confirmed')->default(true)->after('procedural_relation');
             $table->foreignId('case_evidence_id')->nullable()->constrained('case_evidence')->nullOnDelete();
             $table->timestamps();
 

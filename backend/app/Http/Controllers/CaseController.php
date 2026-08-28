@@ -93,6 +93,7 @@ class CaseController extends Controller
             'external_case_id' => $externalCaseId,
             'external_offense_id' => $crime->ID_DLTO,
             'user_id' => Auth::id() ?? 1,
+            'fact_date' => null,
             'facts_breakdown' => ['narrative' => $caseData['DESCRIPCION_HECHOS'] ?? ''],
             'status' => 'draft',
             'error_message' => null,

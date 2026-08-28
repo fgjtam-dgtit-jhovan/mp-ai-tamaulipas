@@ -1,3 +1,4 @@
+from datetime import date
 import os
 from typing import Any
 
@@ -34,7 +35,8 @@ async def _embed(texts: list[str]) -> list[list[float]]:
         return embeddings
 
 
-def _articles_for_offense(offense_id: int) -> list[dict[str, Any]]:
+def _articles_for_offense(offense_id: int, as_of_date: str | None = None) -> list[dict[str, Any]]:
+    reference_date = as_of_date or date.today().isoformat()
     query = '''
         SELECT DISTINCT la.id, la.article_number, la.fraction, la.content, la.display_order,
                ld.title AS document_title, lv.version_label
@@ -43,13 +45,14 @@ def _articles_for_offense(offense_id: int) -> list[dict[str, Any]]:
         JOIN legal_versions lv ON lv.id = la.legal_version_id
         JOIN legal_documents ld ON ld.id = lv.legal_document_id
         WHERE oe.external_offense_id = %s
-          AND lv.effective_date <= CURRENT_DATE
-          AND (lv.repealed_date IS NULL OR lv.repealed_date > CURRENT_DATE)
+          AND la.is_verified = true
+          AND lv.effective_date <= %s
+          AND (lv.repealed_date IS NULL OR lv.repealed_date > %s)
         ORDER BY la.display_order, la.article_number, la.fraction
     '''
     with _database_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query, (offense_id,))
+            cursor.execute(query, (offense_id, reference_date, reference_date))
             rows = cursor.fetchall()
 
     return [
@@ -64,10 +67,13 @@ def _articles_for_offense(offense_id: int) -> list[dict[str, Any]]:
     ]
 
 
-async def search_legal_articles(query: str, offense_id: int, limit: int = 5) -> list[str]:
-    articles = _articles_for_offense(offense_id)
+async def search_legal_articles(query: str, offense_id: int, limit: int = 5, as_of_date: str | None = None) -> list[str]:
+    articles = _articles_for_offense(offense_id, as_of_date)
     if not articles:
-        raise RuntimeError(f'No hay artículos jurídicos vigentes configurados para el delito {offense_id}.')
+        raise RuntimeError(
+            f'No hay artículos jurídicos verificados y vigentes para el delito {offense_id} '
+            f'en la fecha {as_of_date or "actual"}.'
+        )
 
     client = AsyncQdrantClient(url=QDRANT_URL)
     try:

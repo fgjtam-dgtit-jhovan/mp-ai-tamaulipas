@@ -15,6 +15,7 @@ return new class extends Migration
             $table->id();
 
             $table->string('external_case_id')->index();       // Folio / ID de la carpeta en Fiscalía Digital
+            $table->date('fact_date')->nullable()->after('external_offense_id');
             $table->unsignedBigInteger('external_offense_id'); // ID del delito denunciado (ej. 107)
             $table->foreignId('user_id')->nullable();          // ID del Agente del MP
 

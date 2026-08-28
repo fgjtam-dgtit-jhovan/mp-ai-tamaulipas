@@ -13,6 +13,7 @@ class LegalArticle extends Model
         'fraction',
         'content',
         'display_order',
+        'is_verified',
     ];
 
     public function version(): BelongsTo

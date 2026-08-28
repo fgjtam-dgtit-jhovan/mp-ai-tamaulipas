@@ -5,11 +5,13 @@ namespace App\Jobs;
 use App\Models\CaseAnalysis;
 use App\Services\CaseAnalysisService;
 use App\Services\HypothesisEngine;
+use App\Services\ObjectivityAuditEngine;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Collection;
 use Throwable;
 
 class ProcessCaseAnalysisJob implements ShouldQueue
@@ -30,38 +32,69 @@ class ProcessCaseAnalysisJob implements ShouldQueue
         public string $factNarrative
     ) {}
 
-    public function handle(CaseAnalysisService $aiClient, HypothesisEngine $hypothesisEngine): void
-    {
+    public function handle(
+        CaseAnalysisService $aiClient,
+        HypothesisEngine $hypothesisEngine,
+        ObjectivityAuditEngine $objectivityEngine
+    ): void {
         try {
             $response = $aiClient->runAnalysis(
                 $this->analysis->external_case_id,
                 $this->analysis->external_offense_id,
-                $this->factNarrative
+                $this->factNarrative,
+                $this->analysis->fact_date,
             );
 
             $data = $response;
 
             $factRows = $this->factRows($data['facts'] ?? []);
             $this->analysis->facts()->delete();
-            $this->analysis->facts()->createMany($factRows);
+
+            // Se crea uno por uno (no createMany) para poder capturar el
+            // id real de BD de cada fact y mapearlo contra su id_llm.
+            // Volumen bajo (máx. 8 hechos/caso), costo despreciable frente
+            // a la trazabilidad ganada.
+            $createdFacts = collect($factRows)->map(function (array $row) {
+                $attributes = collect($row)->except('id_llm')->all();
+                $fact = $this->analysis->facts()->create($attributes);
+
+                return ['id_llm' => $row['id_llm'], 'model' => $fact];
+            });
 
             $this->analysis->evidence()
                 ->where('origin', 'ia')
                 ->where('is_verified', false)
                 ->delete();
 
-            foreach ($this->evidenceRows($factRows, $data['elements_analysis'] ?? []) as $evidenceRow) {
+            foreach ($this->evidenceRows($createdFacts, $data['elements_analysis'] ?? []) as $evidenceRow) {
                 $elementIds = $evidenceRow['element_ids'];
-                unset($evidenceRow['element_ids']);
+                $factModel = $evidenceRow['fact_model'];
+                unset($evidenceRow['element_ids'], $evidenceRow['fact_model']);
 
                 $evidence = $this->analysis->evidence()->create($evidenceRow);
                 $evidence->offenseElements()->sync($elementIds);
+
+                // Backlink real: el hecho ahora sabe qué evidencia generó.
+                if ($factModel) {
+                    $factModel->update(['case_evidence_id' => $evidence->id]);
+                }
             }
 
+            $deterministicAudit = $objectivityEngine->evaluate($this->analysis, $data['elements_analysis'] ?? []);
+
             $this->analysis->update([
-                'facts_breakdown' => ['narrative' => $this->factNarrative, 'facts' => $factRows],
+                'facts_breakdown' => [
+                    'narrative' => $this->factNarrative,
+                    'facts' => collect($factRows)
+                        ->map(fn(array $row): array => collect($row)->except('id_llm')->all())
+                        ->values()
+                        ->all(),
+                ],
                 'elements_status' => $data['elements_analysis'] ?? [],
-                'objectivity_audit' => $data['objectivity_audit'] ?? [],
+                'objectivity_audit' => array_merge(
+                    $data['objectivity_audit'] ?? [],
+                    ['deterministic_checks' => $deterministicAudit]
+                ),
                 'suggested_diligences' => $data['suggested_diligences'] ?? [],
                 'status' => 'reviewed',
                 'error_message' => null,
@@ -72,7 +105,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
             $hypothesisData = $hypothesisEngine->evaluate($this->analysis, $data['elements_analysis'] ?? []);
             $this->analysis->hypotheses()->delete();
             $this->analysis->hypotheses()->create($hypothesisData);
-        } catch (\UnexpectedValueException|\InvalidArgumentException $exception) {
+        } catch (\UnexpectedValueException | \InvalidArgumentException $exception) {
             $this->analysis->update([
                 'status' => 'rejected',
                 'error_message' => $exception->getMessage(),
@@ -87,67 +120,65 @@ class ProcessCaseAnalysisJob implements ShouldQueue
     private function factRows(array $facts): array
     {
         return collect($facts)
-            ->filter(fn (array $fact): bool => filled($fact['content'] ?? null))
-            ->map(fn (array $fact): array => [
+            ->filter(fn(array $fact): bool => filled($fact['content'] ?? null))
+            ->map(fn(array $fact): array => [
+                'id_llm' => $fact['id'] ?? null,
                 'information_type' => $fact['information_type'] ?? 'MANIFESTACION',
                 'content' => trim($fact['content']),
                 'source' => $fact['source'] ?? 'narrativa_de_la_carpeta',
                 'procedural_relation' => $fact['procedural_relation'] ?? 'neutral',
+                'is_confirmed' => $fact['is_confirmed'] ?? true,
             ])
-            ->unique(fn (array $fact): string => $this->normalizedKey($fact['information_type'].'|'.$fact['content']))
+            // unique()/values() ya no rompen nada aguas abajo: la
+            // vinculación con elements_analysis se hace por id_llm,
+            // no por posición dentro de este array.
+            ->unique(fn(array $fact): string => $this->normalizedKey($fact['information_type'] . '|' . $fact['content']))
             ->values()
             ->all();
     }
 
     /**
      * Construye los registros de evidencia a partir de los hechos YA
-     * CLASIFICADOS por el Motor de Hechos (facts), no de la cita cruda
-     * dentro de elements_analysis. Solo los tipos EVIDENCIA, TESTIMONIO
-     * y DATO_TECNICO se convierten en registros de evidencia — una
-     * MANIFESTACION no es evidencia formal, solo el relato del
-     * declarante (distinción que exige la sección 7.2 del anteproyecto).
-     *
-     * Cada evidencia se vincula a los elementos jurídicos usando el
-     * supporting_fact_index que el ai-service regresa junto con cada
-     * elemento — el índice exacto dentro de este mismo array de
-     * facts, no una comparación de texto post-hoc (que resultaba
-     * poco confiable entre dos llamadas separadas al LLM).
+     * CREADOS en BD ($createdFacts trae el modelo real + su id_llm).
+     * El vínculo con elements_analysis se hace por id_llm
+     * (supporting_fact_id que regresa el ai-service), nunca por
+     * posición de array — un hecho eliminado por duplicado en
+     * factRows() ya no desalinea nada aguas abajo. Solo los tipos
+     * EVIDENCIA, TESTIMONIO y DATO_TECNICO se convierten en registros
+     * de evidencia — una MANIFESTACION no es evidencia formal (7.2).
      */
-    private function evidenceRows(array $factRows, array $elementsAnalysis): array
+    private function evidenceRows(Collection $createdFacts, array $elementsAnalysis): array
     {
         $tiposConsideradosEvidencia = ['EVIDENCIA', 'TESTIMONIO', 'DATO_TECNICO'];
 
-        // El ai-service ahora regresa supporting_fact_index: el índice
-        // exacto (dentro del array facts original) que sustenta cada
-        // elemento. Mucho más confiable que comparar texto de dos
-        // llamadas distintas al LLM.
-        $elementIdsPorFactIndex = collect($elementsAnalysis)
-            ->filter(fn (array $el): bool => $el['supporting_fact_index'] !== null)
-            ->groupBy('supporting_fact_index')
-            ->map(fn ($group) => $group->pluck('element_id')->filter()->unique()->values()->all());
+        $elementIdsPorFactId = collect($elementsAnalysis)
+            ->filter(fn(array $el): bool => ($el['supporting_fact_id'] ?? null) !== null)
+            ->groupBy('supporting_fact_id')
+            ->map(fn($group) => $group->pluck('element_id')->filter()->unique()->values()->all());
 
-        return collect($factRows)
-            ->values()
-            ->filter(fn (array $fact): bool => in_array($fact['information_type'], $tiposConsideradosEvidencia, true))
-            ->map(function (array $fact, int $index) use ($elementIdsPorFactIndex): array {
-                $elementIds = $elementIdsPorFactIndex->get($index, []);
+        return $createdFacts
+            ->filter(fn(array $entry): bool => in_array($entry['model']->information_type, $tiposConsideradosEvidencia, true))
+            ->map(function (array $entry) use ($elementIdsPorFactId): array {
+                $fact = $entry['model'];
+                $elementIds = $elementIdsPorFactId->get($entry['id_llm'], []);
 
                 return [
-                    'offense_element_id' => $elementIds[0] ?? null,
+                    'fact_model' => $fact,
                     'element_ids' => $elementIds,
+                    'offense_element_id' => $elementIds[0] ?? null,
                     'origin' => 'ia',
-                    'evidence_type' => match ($fact['information_type']) {
+                    'evidence_type' => match ($fact->information_type) {
                         'EVIDENCIA' => 'documental_o_material',
                         'TESTIMONIO' => 'testimonial',
                         'DATO_TECNICO' => 'pericial',
                         default => 'hecho_narrado',
                     },
-                    'source' => $fact['source'] ?? 'narrativa_de_la_carpeta',
+                    'source' => $fact->source ?? 'narrativa_de_la_carpeta',
                     'evidence_date' => null,
-                    'related_fact' => trim($fact['content']),
+                    'related_fact' => trim($fact->content),
                     'authenticity_status' => 'pendiente',
                     'valuation_status' => 'pendiente',
-                    'procedural_relation' => $fact['procedural_relation'] ?? 'neutral',
+                    'procedural_relation' => $fact->procedural_relation ?? 'neutral',
                 ];
             })
             ->values()
