@@ -1,185 +1,423 @@
 services:
 
-  # ── Base de datos relacional ────────────────────────────────────
+  # ============================================================
+  # PostgreSQL
+  # ============================================================
+
   postgres:
     image: postgres:16-alpine
+
     container_name: mpia_postgres
+
     restart: unless-stopped
+
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-mpia_tamaulipas}
       POSTGRES_USER: ${POSTGRES_USER:-mpia}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
     ports:
       - "5432:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mpia}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-mpia} -d ${POSTGRES_DB:-mpia_tamaulipas}"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
-  # ── Búsqueda semántica (RAG jurídico y RAG de hechos) ───────────
+
+  # ============================================================
+  # Qdrant
+  # ============================================================
+
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: mpia_qdrant
-    restart: unless-stopped
-    ports:
-      - "6333:6333"   # API REST
-      - "6334:6334"   # API gRPC
-    volumes:
-      - qdrant_data:/qdrant/storage
+      image: qdrant/qdrant:latest
 
-  # ── Caché ────────────────────────────────────────────────────────
+      container_name: mpia_qdrant
+
+      restart: unless-stopped
+
+      ports:
+        - "6333:6333"
+        - "6334:6334"
+
+      volumes:
+        - qdrant_data:/qdrant/storage
+
+
+  # ============================================================
+  # Redis
+  # ============================================================
+
   redis:
     image: redis:7-alpine
+
     container_name: mpia_redis
+
     restart: unless-stopped
+
     ports:
       - "6379:6379"
+
     volumes:
       - redis_data:/data
 
-  # ── Almacenamiento de archivos (evidencia, documentos) ──────────
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+
+  # ============================================================
+  # MinIO
+  # ============================================================
+
   minio:
     image: minio/minio:latest
+
     container_name: mpia_minio
+
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mpia_admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme123}
+
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Consola web
+      - "9000:9000"
+      - "9001:9001"
+
     volumes:
       - minio_data:/data
 
-  # ── Modelo de lenguaje ejecutado localmente ─────────────────────
+
+  # ============================================================
+  # Ollama
+  # ============================================================
+
   ollama:
     image: ollama/ollama:latest
+
     container_name: mpia_ollama
+
     restart: unless-stopped
+
     ports:
       - "11434:11434"
+
     volumes:
       - ollama_data:/root/.ollama
+
     healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "ollama list >/dev/null 2>&1 || exit 1"
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 10s
-    # Si tienes GPU NVIDIA disponible, descomenta lo siguiente:
+      start_period: 30s
+
+    # ==========================================================
+    # GPU NVIDIA - opcional
+    # ==========================================================
+    #
+    # Si tu servidor tiene NVIDIA correctamente configurado,
+    # puedes descomentar:
+    #
     # deploy:
     #   resources:
     #     reservations:
     #       devices:
     #         - driver: nvidia
     #           count: all
-    #           capabilities: [gpu]
+    #           capabilities:
+    #             - gpu
 
-  # ── Servicio de IA / RAG (Python + FastAPI) ─────────────────────
-  # No expuesto al navegador: solo Laravel lo consume (ver README).
+
+  # ============================================================
+  # AI Service - FastAPI
+  # ============================================================
+
   ai-service:
-    build: ./ai-service
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+
     container_name: mpia_ai_service
+
     restart: unless-stopped
-    env_file: .env
+
+    env_file:
+      - .env
+
     environment:
       AI_DB_HOST: postgres
       AI_DB_PORT: 5432
       AI_DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
       AI_DB_USERNAME: ${POSTGRES_USER:-mpia}
       AI_DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
       QDRANT_URL: http://qdrant:6333
+
       OLLAMA_URL: http://ollama:11434
+
     ports:
       - "8001:8000"
+
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
+
       qdrant:
         condition: service_started
+
       ollama:
         condition: service_healthy
+
     volumes:
       - ./ai-service:/app
 
-  # ── Backend Laravel (producción / app web) ─────────────────────
+
+  # ============================================================
+  # Laravel Backend
+  #
+  # SOLO WEB
+  # ============================================================
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+
     container_name: mpia_backend
+
     restart: unless-stopped
-    env_file: .env
+
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
+
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: 5432
       DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
       DB_USERNAME: ${POSTGRES_USER:-mpia}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
       QUEUE_CONNECTION: database
+
       CACHE_STORE: database
+
       SESSION_DRIVER: database
+
       REDIS_HOST: redis
       REDIS_PORT: 6379
+
       FILESYSTEM_DISK: local
+
     ports:
       - "8000:8000"
+
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
+
       redis:
-        condition: service_started
+        condition: service_healthy
+
       minio:
         condition: service_started
+
       ai-service:
         condition: service_started
-    command: >
-      sh -c "php artisan config:cache &&
-      php artisan route:cache &&
-      php artisan view:cache &&
-      php artisan queue:work --tries=3 --sleep=5 --timeout=90 --queue=default &
-      php artisan serve --host=0.0.0.0 --port=8000"
 
-  # ── Scheduler de Laravel ───────────────────────────────────────────
+    command:
+      - sh
+      - -c
+      - |
+        php artisan config:cache
+        php artisan route:cache
+        php artisan view:cache
+
+        exec php artisan serve \
+          --host=0.0.0.0 \
+          --port=8000
+
+
+  # ============================================================
+  # Laravel Queue Worker
+  #
+  # ESTE CONTENEDOR PROCESA LOS JOBS
+  # ============================================================
+
+  queue-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+
+    container_name: mpia_queue_worker
+
+    restart: unless-stopped
+
+    stop_grace_period: 60s
+
+    env_file:
+      - .env
+
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
+      DB_USERNAME: ${POSTGRES_USER:-mpia}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
+      QUEUE_CONNECTION: database
+
+      CACHE_STORE: database
+
+      SESSION_DRIVER: database
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      FILESYSTEM_DISK: local
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      minio:
+        condition: service_started
+
+      ai-service:
+        condition: service_started
+
+    command:
+      - php
+      - artisan
+      - queue:work
+      - --queue=default
+      - --sleep=5
+      - --tries=3
+      - --timeout=300
+      - --backoff=10
+      - --memory=512
+
+
+  # ============================================================
+  # Laravel Scheduler
+  # ============================================================
+
   scheduler:
     build:
       context: ./backend
       dockerfile: Dockerfile
+
     container_name: mpia_scheduler
+
     restart: unless-stopped
-    env_file: .env
+
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
+
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: 5432
       DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
       DB_USERNAME: ${POSTGRES_USER:-mpia}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+
       QUEUE_CONNECTION: database
+
       CACHE_STORE: database
+
       SESSION_DRIVER: database
+
       REDIS_HOST: redis
       REDIS_PORT: 6379
+
+      FILESYSTEM_DISK: local
+
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
+
       redis:
-        condition: service_started
-    command: >
-      sh -c "while true; do php artisan schedule:run --no-interaction --quiet; sleep 60; done"
+        condition: service_healthy
+
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          php artisan schedule:run --no-interaction --quiet
+          sleep 60
+        done
+
+
+# ==============================================================
+# Volúmenes persistentes
+# ==============================================================
 
 volumes:
+
   postgres_data:
+    name: mpia_postgres_data
+
   qdrant_data:
+    name: mpia_qdrant_data
+
   redis_data:
+    name: mpia_redis_data
+
   minio_data:
+    name: mpia_minio_data
+
   ollama_data:
+    name: mpia_ollama_data
