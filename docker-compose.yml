@@ -106,26 +106,105 @@ services:
     volumes:
       - ./ai-service:/app
 
-  # ── Backend (Laravel 13 + Vue Starter Kit + Inertia 3) ───────────
-  # El frontend NO va en carpeta/contenedor aparte: vive dentro de
-  # backend/resources/js/ (lo crea el starter kit automáticamente).
-  # En desarrollo se recomienda correr esto NATIVO (composer run dev)
-  # para conservar el hot-reload de Vite — ver README. Descomenta este
-  # bloque solo cuando muevas el backend a Docker (ej. producción).
-  # backend:
-  #   build: ./backend
-  #   container_name: mpia_backend
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #     - minio
-  #     - ai-service
-  #   volumes:
-  #     - ./backend:/var/www/html
+  # ── Backend Laravel (producción / app web) ─────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mpia_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
+      DB_USERNAME: ${POSTGRES_USER:-mpia}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      QUEUE_CONNECTION: database
+      CACHE_STORE: database
+      SESSION_DRIVER: database
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      FILESYSTEM_DISK: local
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      ai-service:
+        condition: service_started
+    command: >
+      sh -c "php artisan config:cache &&
+      php artisan route:cache &&
+      php artisan view:cache &&
+      php artisan serve --host=0.0.0.0 --port=8000"
+
+  # ── Worker de cola (Laravel queue) ────────────────────────────────
+  queue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mpia_queue
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
+      DB_USERNAME: ${POSTGRES_USER:-mpia}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      QUEUE_CONNECTION: database
+      CACHE_STORE: database
+      SESSION_DRIVER: database
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+    command: >
+      sh -c "php artisan queue:work --tries=3 --sleep=5 --timeout=90 --queue=default"
+
+  # ── Scheduler de Laravel ───────────────────────────────────────────
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mpia_scheduler
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
+      DB_USERNAME: ${POSTGRES_USER:-mpia}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      QUEUE_CONNECTION: database
+      CACHE_STORE: database
+      SESSION_DRIVER: database
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+    command: >
+      sh -c "while true; do php artisan schedule:run --no-interaction --quiet; sleep 60; done"
 
 volumes:
   postgres_data:
