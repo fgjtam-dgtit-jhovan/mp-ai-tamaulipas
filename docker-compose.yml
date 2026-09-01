@@ -236,7 +236,7 @@ services:
       DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
       DB_USERNAME: ${POSTGRES_USER:-mpia}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-
+      MPIA_ENGINE_URL: http://ai-service:8000
       QUEUE_CONNECTION: database
 
       CACHE_STORE: database
@@ -318,6 +318,7 @@ services:
       REDIS_PORT: 6379
 
       FILESYSTEM_DISK: local
+      MPIA_ENGINE_URL: http://ai-service:8000
 
     depends_on:
       postgres:
