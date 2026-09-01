@@ -1,0 +1,14 @@
+node_modules
+vendor
+.git
+.gitignore
+.github
+.env
+.env.*
+.phpunit.result.cache
+storage/*.key
+storage/logs/
+bootstrap/cache/
+public/build/
+*.log
+.DS_Store

@@ -144,37 +144,8 @@ services:
       sh -c "php artisan config:cache &&
       php artisan route:cache &&
       php artisan view:cache &&
+      php artisan queue:work --tries=3 --sleep=5 --timeout=90 --queue=default &
       php artisan serve --host=0.0.0.0 --port=8000"
-
-  # ── Worker de cola (Laravel queue) ────────────────────────────────
-  queue:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mpia_queue
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      APP_ENV: production
-      APP_DEBUG: "false"
-      DB_CONNECTION: pgsql
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_DATABASE: ${POSTGRES_DB:-mpia_tamaulipas}
-      DB_USERNAME: ${POSTGRES_USER:-mpia}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      QUEUE_CONNECTION: database
-      CACHE_STORE: database
-      SESSION_DRIVER: database
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-    depends_on:
-      postgres:
-        condition: service_started
-      redis:
-        condition: service_started
-    command: >
-      sh -c "php artisan queue:work --tries=3 --sleep=5 --timeout=90 --queue=default"
 
   # ── Scheduler de Laravel ───────────────────────────────────────────
   scheduler:
