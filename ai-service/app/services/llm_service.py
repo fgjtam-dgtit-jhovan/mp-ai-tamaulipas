@@ -28,6 +28,7 @@ OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "900"))
 OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", str(os.cpu_count() or 8)))
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 # ── Fase 1a: SOLO clasificación de hechos (Motor de Hechos) ────────
