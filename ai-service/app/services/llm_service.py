@@ -30,6 +30,17 @@ OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", str(os.cpu_count() or 8))
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+logger.propagate = False
+
 
 # ── Fase 1a: SOLO clasificación de hechos (Motor de Hechos) ────────
 class FactItem(BaseModel):
