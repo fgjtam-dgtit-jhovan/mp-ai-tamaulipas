@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import List, Optional
 
 import httpx
@@ -13,7 +14,19 @@ OLLAMA_URL = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_BASE_URL", "http://oll
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:3b-instruct"
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "240"))
-OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "2400"))
+
+# 2400 era mucho más de lo que necesitan estos JSONs (cada campo de
+# texto tiene max_length=300 caracteres). Un techo más bajo reduce el
+# tiempo máximo posible por llamada en CPU sin arriesgar truncar
+# contenido real — súbelo solo si empiezas a ver done_reason=="length"
+# en los logs con contenido legítimamente cortado.
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "900"))
+
+# CRÍTICO para CPU: sin esto, Ollama decide solo cuántos hilos usar
+# dentro del contenedor y no siempre acierta con el total real
+# disponible. Ajusta el default a los núcleos de tu servidor.
+OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", str(os.cpu_count() or 8)))
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,7 +141,8 @@ def _detectar_contenido_plantilla(analysis: dict) -> list[str]:
     return hallazgos
 
 
-async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel], _retry: bool = False) -> dict:
+async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel], _retry: bool = False,
+                     _call_label: str = "") -> dict:
     payload = {
         "model": OLLAMA_MODEL,
         "messages": [
@@ -142,12 +156,14 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
             "seed": 42,
             "num_ctx": OLLAMA_NUM_CTX,
             "num_predict": OLLAMA_NUM_PREDICT,
+            "num_thread": OLLAMA_NUM_THREAD,
         },
         "stream": False,
     }
 
     content = None
     done_reason = None
+    inicio = time.perf_counter()
 
     for attempt in range(3):
         try:
@@ -157,6 +173,8 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
                 result = response.json()
                 content = result["message"]["content"]
                 done_reason = result.get("done_reason")
+                eval_count = result.get("eval_count")
+                eval_duration_s = (result.get("eval_duration") or 0) / 1e9
                 break
         except httpx.HTTPStatusError as exc:
             logger.error("Ollama respondió HTTP %s: %s", exc.response.status_code, exc.response.text[:2000])
@@ -173,19 +191,33 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
             logger.warning("Ollama no está disponible; reintentando (%s/3): %s", attempt + 1, exc)
             await asyncio.sleep(2 ** attempt)
 
+    elapsed = time.perf_counter() - inicio
+    logger.info(
+        "[%s] Ollama respondió en %.1fs (tokens generados: %s, tokens/s: %.1f, done_reason: %s, hilos: %s)",
+        _call_label or "sin-etiqueta",
+        elapsed,
+        eval_count,
+        (eval_count / eval_duration_s) if eval_count and eval_duration_s else 0.0,
+        done_reason,
+        OLLAMA_NUM_THREAD,
+    )
+
     if done_reason == "length" and not _retry:
+        logger.warning("[%s] Se agotó num_predict (%s) — reintentando con instrucción de compactar.",
+                        _call_label, OLLAMA_NUM_PREDICT)
         return await query_llm(
             system_prompt,
             user_prompt + "\nIMPORTANTE: responde de forma mucho más compacta; no copies la "
             "narrativa en ningún campo y cierra siempre el JSON.",
             schema,
             _retry=True,
+            _call_label=_call_label,
         )
 
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        logger.error("Ollama devolvió JSON inválido: %s; contenido: %s", exc, (content or "")[:2000])
+        logger.error("[%s] Ollama devolvió JSON inválido: %s; contenido: %s", _call_label, exc, (content or "")[:2000])
         if not _retry:
             return await query_llm(
                 system_prompt,
@@ -193,18 +225,21 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
                 "fragmentos breves, no copies la narrativa y cierra correctamente el JSON.",
                 schema,
                 _retry=True,
+                _call_label=_call_label,
             )
         raise HTTPException(status_code=502, detail="El modelo no regresó un JSON válido.") from exc
 
     try:
         parsed = schema.model_validate(parsed).model_dump()
     except Exception as exc:
-        logger.error("Ollama devolvió una estructura inválida: %s; contenido: %s", exc, (content or "")[:2000])
+        logger.error("[%s] Ollama devolvió una estructura inválida: %s; contenido: %s",
+                      _call_label, exc, (content or "")[:2000])
         raise HTTPException(status_code=502, detail="El modelo devolvió una estructura JSON inválida.") from exc
 
     hallazgos = _detectar_contenido_plantilla(parsed)
 
     if hallazgos and not _retry:
+        logger.warning("[%s] Contenido de plantilla detectado en: %s — reintentando.", _call_label, hallazgos)
         refuerzo = (
             "\n\nADVERTENCIA: tu respuesta anterior repitió texto genérico de ejemplo o de "
             f"instrucción en estos campos: {', '.join(hallazgos)}. Esto NO es válido. Cada campo "
@@ -212,7 +247,7 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
             "caso. Si genuinamente no hay información suficiente, usa FALTANTE con una "
             "missing_reason específica del caso, o deja el arreglo vacío."
         )
-        return await query_llm(system_prompt, user_prompt + refuerzo, schema, _retry=True)
+        return await query_llm(system_prompt, user_prompt + refuerzo, schema, _retry=True, _call_label=_call_label)
 
     if hallazgos and _retry:
         raise HTTPException(

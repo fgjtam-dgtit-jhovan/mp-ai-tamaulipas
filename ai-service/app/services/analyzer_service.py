@@ -67,7 +67,7 @@ async def _clasificar_hechos(narrative: str) -> list:
     Responde ahora con el JSON de la NARRATIVA REAL, no del ejemplo.
     '''
 
-    result = await query_llm(system_prompt, user_prompt, FactsOnlySchema)
+    result = await query_llm(system_prompt, user_prompt, FactsOnlySchema, _call_label="hechos")
 
     facts = result["facts"]
     # Id estable asignado por Python (NO por el LLM), inmediatamente
@@ -156,7 +156,7 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
     Responde ahora con el JSON del CASO REAL, no del ejemplo.
     '''
 
-    result = await query_llm(system_prompt, user_prompt, ElementsAnalysisSchema)
+    result = await query_llm(system_prompt, user_prompt, ElementsAnalysisSchema, _call_label="elementos")
     return result["elements_analysis"]
 
 
@@ -215,7 +215,7 @@ async def _auditar_objetividad(narrative: str, offense_name: str | None, offense
     Responde ahora con el JSON de auditoría del CASO REAL, no del ejemplo.
     '''
 
-    return await query_llm(system_prompt, user_prompt, AuditSchema)
+    return await query_llm(system_prompt, user_prompt, AuditSchema, _call_label="auditoria")
 
 
 # ── Orquestador: llama a las tres fases en secuencia ────────────────
