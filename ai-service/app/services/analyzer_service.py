@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from app.services.llm_service import AuditSchema, ElementsAnalysisSchema, FactsOnlySchema, query_llm
@@ -231,9 +232,10 @@ async def analyze_case_file(
     if not elements:
         raise ValueError(f'El delito {offense_id} no tiene elementos jurídicos configurados.')
 
-    legal_context = await search_legal_articles(query=narrative, offense_id=offense_id, limit=5, as_of_date=fact_date)
-
-    facts = await _clasificar_hechos(narrative)
+    legal_context, facts = await asyncio.gather(
+        search_legal_articles(query=narrative, offense_id=offense_id, limit=5, as_of_date=fact_date),
+        _clasificar_hechos(narrative),
+    )
 
     elements_analysis = await _analizar_elementos(
         narrative, offense_name, offense_id, elements, legal_context, legal_articles, facts

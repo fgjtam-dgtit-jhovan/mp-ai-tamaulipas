@@ -21,6 +21,7 @@ OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "240"))
 # contenido real — súbelo solo si empiezas a ver done_reason=="length"
 # en los logs con contenido legítimamente cortado.
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "900"))
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 
 # CRÍTICO para CPU: sin esto, Ollama decide solo cuántos hilos usar
 # dentro del contenedor y no siempre acierta con el total real
@@ -40,6 +41,8 @@ if not logger.handlers:
     logger.addHandler(handler)
 
 logger.propagate = False
+
+_http_client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
 
 
 # ── Fase 1a: SOLO clasificación de hechos (Motor de Hechos) ────────
@@ -170,6 +173,7 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
             "num_predict": OLLAMA_NUM_PREDICT,
             "num_thread": OLLAMA_NUM_THREAD,
         },
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "stream": False,
     }
 
@@ -179,15 +183,17 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
 
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-                response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
-                response.raise_for_status()
-                result = response.json()
-                content = result["message"]["content"]
-                done_reason = result.get("done_reason")
-                eval_count = result.get("eval_count")
-                eval_duration_s = (result.get("eval_duration") or 0) / 1e9
-                break
+            response = await _http_client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            content = result["message"]["content"]
+            done_reason = result.get("done_reason")
+            eval_count = result.get("eval_count")
+            eval_duration_s = (result.get("eval_duration") or 0) / 1e9
+            prompt_eval_count = result.get("prompt_eval_count")
+            prompt_eval_duration_s = (result.get("prompt_eval_duration") or 0) / 1e9
+            load_duration_s = (result.get("load_duration") or 0) / 1e9
+            break
         except httpx.HTTPStatusError as exc:
             logger.error("Ollama respondió HTTP %s: %s", exc.response.status_code, exc.response.text[:2000])
             raise HTTPException(
@@ -205,11 +211,15 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
 
     elapsed = time.perf_counter() - inicio
     logger.info(
-        "[%s] Ollama respondió en %.1fs (tokens generados: %s, tokens/s: %.1f, done_reason: %s, hilos: %s)",
+        "[%s] Ollama respondió en %.1fs (entrada: %s tokens, salida: %s tokens, "
+        "prompt tokens/s: %.1f, generación tokens/s: %.1f, carga: %.1fs, done_reason: %s, hilos: %s)",
         _call_label or "sin-etiqueta",
         elapsed,
+        prompt_eval_count,
         eval_count,
+        (prompt_eval_count / prompt_eval_duration_s) if prompt_eval_count and prompt_eval_duration_s else 0.0,
         (eval_count / eval_duration_s) if eval_count and eval_duration_s else 0.0,
+        load_duration_s,
         done_reason,
         OLLAMA_NUM_THREAD,
     )

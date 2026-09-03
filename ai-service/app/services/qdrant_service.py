@@ -10,6 +10,7 @@ QDRANT_URL = os.getenv('QDRANT_URL', 'http://qdrant:6333')
 QDRANT_COLLECTION = os.getenv('QDRANT_COLLECTION', 'legal_articles')
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://ollama:11434')
 OLLAMA_EMBED_MODEL = os.getenv('OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+_embed_http_client = httpx.AsyncClient(timeout=120.0)
 
 
 def _database_connection():
@@ -23,16 +24,15 @@ def _database_connection():
 
 
 async def _embed(texts: list[str]) -> list[list[float]]:
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            f'{OLLAMA_URL}/api/embed',
-            json={'model': OLLAMA_EMBED_MODEL, 'input': texts},
-        )
-        response.raise_for_status()
-        embeddings = response.json().get('embeddings')
-        if not embeddings:
-            raise RuntimeError('Ollama no devolvió embeddings para el texto jurídico.')
-        return embeddings
+    response = await _embed_http_client.post(
+        f'{OLLAMA_URL}/api/embed',
+        json={'model': OLLAMA_EMBED_MODEL, 'input': texts},
+    )
+    response.raise_for_status()
+    embeddings = response.json().get('embeddings')
+    if not embeddings:
+        raise RuntimeError('Ollama no devolvió embeddings para el texto jurídico.')
+    return embeddings
 
 
 def _articles_for_offense(offense_id: int, as_of_date: str | None = None) -> list[dict[str, Any]]:
@@ -86,19 +86,37 @@ async def search_legal_articles(query: str, offense_id: int, limit: int = 5, as_
                 vectors_config=models.VectorParams(size=len(query_vector), distance=models.Distance.COSINE),
             )
 
-        article_embeddings = await _embed([article['content'] for article in articles])
-        await client.upsert(
+        cached_points = await client.retrieve(
             collection_name=QDRANT_COLLECTION,
-            wait=True,
-            points=[
-                models.PointStruct(
-                    id=article['id'],
-                    vector=vector,
-                    payload={**article, 'external_offense_id': offense_id},
-                )
-                for article, vector in zip(articles, article_embeddings)
-            ],
+            ids=[article['id'] for article in articles],
+            with_payload=True,
+            with_vectors=False,
         )
+        cached_by_id = {point.id: point for point in cached_points}
+        articles_to_index = [
+            article
+            for article in articles
+            if (
+                article['id'] not in cached_by_id
+                or cached_by_id[article['id']].payload.get('content') != article['content']
+                or cached_by_id[article['id']].payload.get('external_offense_id') != offense_id
+            )
+        ]
+
+        if articles_to_index:
+            article_embeddings = await _embed([article['content'] for article in articles_to_index])
+            await client.upsert(
+                collection_name=QDRANT_COLLECTION,
+                wait=True,
+                points=[
+                    models.PointStruct(
+                        id=article['id'],
+                        vector=vector,
+                        payload={**article, 'external_offense_id': offense_id},
+                    )
+                    for article, vector in zip(articles_to_index, article_embeddings)
+                ],
+            )
 
         results = await client.search(
             collection_name=QDRANT_COLLECTION,
