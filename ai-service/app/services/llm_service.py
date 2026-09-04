@@ -93,23 +93,20 @@ class ElementStatus(BaseModel):
 
     @model_validator(mode="after")
     def _consistencia_status(self) -> "ElementStatus":
-        # Refuerzo estructural de las reglas 5/6/7 del prompt: si el modelo
-        # marca ACREDITADO/CONTRADICTORIO sin evidencia real, o FALTANTE sin
-        # razón, es una respuesta incompleta — mejor forzar un reintento que
-        # persistir un elemento sin fundamento verificable (sección 5.2
-        # del anteproyecto: "no genera conclusiones sin fundamento
-        # jurídico verificable").
+        # Un modelo pequeño puede omitir campos relacionados. Ante eso,
+        # degradamos de forma conservadora a FALTANTE en vez de fabricar
+        # evidencia o abortar todo el análisis por un registro incompleto.
         if self.status in ("ACREDITADO", "CONTRADICTORIO"):
             if not self.evidence_found or not self.supporting_fact_id:
-                raise ValueError(
-                    f"element_id={self.element_id}: status={self.status} requiere "
-                    "evidence_found y supporting_fact_id no nulos."
+                self.status = "FALTANTE"
+                self.evidence_found = None
+                self.supporting_fact_id = None
+                self.missing_reason = (
+                    "La respuesta del modelo no aportó evidencia verificable para este elemento."
                 )
         if self.status == "FALTANTE":
             if not self.missing_reason:
-                raise ValueError(
-                    f"element_id={self.element_id}: status=FALTANTE requiere missing_reason no nulo."
-                )
+                self.missing_reason = "No se identificó información suficiente en los hechos disponibles."
         return self
 
 
@@ -118,22 +115,15 @@ class ElementsAnalysisSchema(BaseModel):
 
     @model_validator(mode="after")
     def _sin_element_ids_duplicados(self) -> "ElementsAnalysisSchema":
-        # Cada elemento del tipo penal debe evaluarse UNA SOLA VEZ. Sin este
-        # chequeo, un modelo chico como qwen2.5:3b puede repetir el mismo
-        # element_id varias veces (ej. "8" tres veces con distinto
-        # supporting_fact_id) y Pydantic lo aceptaba sin más porque nada
-        # lo prohibía a nivel de schema. Al lanzar ValueError aquí,
-        # aprovechamos el mismo mecanismo de reintento que ya existe en
-        # query_llm para errores de validación (ver bloque "except Exception"
-        # más abajo), sin tocar el orquestador.
-        ids = [e.element_id for e in self.elements_analysis]
-        duplicados = sorted({i for i in ids if ids.count(i) > 1})
-        if duplicados:
-            raise ValueError(
-                f"element_id duplicado(s) en la respuesta: {duplicados}. Cada elemento del "
-                "tipo penal debe aparecer EXACTAMENTE UNA VEZ en elements_analysis, nunca "
-                "repetido con distinto supporting_fact_id."
-            )
+        # Conserva la primera aparición. El orquestador completa los elementos
+        # omitidos y vuelve a validar evidencia contra los hechos reales.
+        vistos = set()
+        unicos = []
+        for element in self.elements_analysis:
+            if element.element_id not in vistos:
+                vistos.add(element.element_id)
+                unicos.append(element)
+        self.elements_analysis = unicos
         return self
 
 
@@ -323,7 +313,9 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
                 f"requerido ({str(exc)[:300]}). Revisa que 'status' sea EXACTAMENTE uno de "
                 "ACREDITADO, FALTANTE o CONTRADICTORIO (nunca otro valor), que "
                 "evidence_found/missing_reason/supporting_fact_id estén llenos según "
-                "corresponda a cada status, y que cada element_id aparezca UNA SOLA VEZ "
+                    "corresponda a cada status. Usa CONTRADICTORIO solo si un hecho expresa "
+                    "explícitamente lo contrario del elemento; si falta información, usa FALTANTE. "
+                    "Cada element_id debe aparecer UNA SOLA VEZ "
                 "en toda la lista.",
                 schema,
                 _retry=True,

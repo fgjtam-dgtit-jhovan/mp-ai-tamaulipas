@@ -28,10 +28,29 @@ async def _embed(texts: list[str]) -> list[list[float]]:
             f'{OLLAMA_URL}/api/embed',
             json={'model': OLLAMA_EMBED_MODEL, 'input': texts},
         )
+        if response.status_code == 404:
+            legacy_embeddings = []
+            for text in texts:
+                legacy_response = await client.post(
+                    f'{OLLAMA_URL}/api/embeddings',
+                    json={'model': OLLAMA_EMBED_MODEL, 'prompt': text},
+                )
+                if legacy_response.status_code == 404:
+                    raise RuntimeError(
+                        f"El modelo de embeddings '{OLLAMA_EMBED_MODEL}' no esta instalado "
+                        f"en Ollama ({OLLAMA_URL}). Ejecuta: ollama pull {OLLAMA_EMBED_MODEL}"
+                    )
+                legacy_response.raise_for_status()
+                embedding = legacy_response.json().get('embedding')
+                if not embedding:
+                    raise RuntimeError('Ollama no devolvio embeddings para el texto juridico.')
+                legacy_embeddings.append(embedding)
+            return legacy_embeddings
+
         response.raise_for_status()
         embeddings = response.json().get('embeddings')
         if not embeddings:
-            raise RuntimeError('Ollama no devolvió embeddings para el texto jurídico.')
+            raise RuntimeError('Ollama no devolvio embeddings para el texto juridico.')
         return embeddings
 
 
