@@ -5,12 +5,13 @@ namespace App\Services;
 use App\Models\LegalArticle;
 use App\Models\Ms\Crime;
 use App\Models\OffenseElement;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class CaseAnalysisService
 {
-    public function runAnalysis(string $externalCaseId, int $externalOffenseId, string $narrative, ?\Carbon\Carbon $factDate = null): array
+    public function runAnalysis(string $externalCaseId, int $externalOffenseId, string $narrative, ?Carbon $factDate = null): array
     {
         $baseUrl = config('services.mpia_engine.url');
 
@@ -30,28 +31,29 @@ class CaseAnalysisService
 
         $crime = Crime::on('sqlsrv')->find($externalOffenseId);
 
-        $response = Http::timeout(540)->post("{$baseUrl}/api/v1/analyze-case", [
-            'external_case_id' => $externalCaseId,
-            'external_offense_id' => $externalOffenseId,
-            'offense_name' => $crime?->DLTO,
-            'fact_narrative' => $narrative,
-            'fact_date' => $factDate?->toDateString(),
-            'elements' => $elements->map(fn (OffenseElement $element): array => [
-                'id' => $element->id,
-                'name' => $element->name,
-                'type' => $element->element_type,
-                'criteria' => $element->verification_criteria,
-                'required' => $element->is_required,
-                'legal_article' => $element->legalArticle?->citation,
-            ])->values()->all(),
-            'legal_articles' => $elements->pluck('legalArticle')->filter()->unique('id')->map(fn (LegalArticle $article): array => [
-                'id' => $article->id,
-                'article' => $article->article_number,
-                'fraction' => $article->fraction,
-                'content' => $article->content,
-                'citation' => $article->citation,
-            ])->values()->all(),
-        ]);
+        $response = Http::timeout(config('services.mpia_engine.timeout', 1700))
+            ->post("{$baseUrl}/api/v1/analyze-case", [
+                'external_case_id' => $externalCaseId,
+                'external_offense_id' => $externalOffenseId,
+                'offense_name' => $crime?->DLTO,
+                'fact_narrative' => $narrative,
+                'fact_date' => $factDate?->toDateString(),
+                'elements' => $elements->map(fn (OffenseElement $element): array => [
+                    'id' => $element->id,
+                    'name' => $element->name,
+                    'type' => $element->element_type,
+                    'criteria' => $element->verification_criteria,
+                    'required' => $element->is_required,
+                    'legal_article' => $element->legalArticle?->citation,
+                ])->values()->all(),
+                'legal_articles' => $elements->pluck('legalArticle')->filter()->unique('id')->map(fn (LegalArticle $article): array => [
+                    'id' => $article->id,
+                    'article' => $article->article_number,
+                    'fraction' => $article->fraction,
+                    'content' => $article->content,
+                    'citation' => $article->citation,
+                ])->values()->all(),
+            ]);
 
         if ($response->failed()) {
             $detail = $response->json('detail');

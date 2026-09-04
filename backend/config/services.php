@@ -38,6 +38,7 @@ return [
     /* Service MP-IA Engine */
     'mpia_engine' => [
         'url' => env('MPIA_ENGINE_URL', 'http://localhost:8001'),
+        'timeout' => (int) env('MPIA_ENGINE_TIMEOUT', 1700),
     ],
 
 ];

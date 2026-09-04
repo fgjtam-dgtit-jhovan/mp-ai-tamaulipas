@@ -46,9 +46,12 @@ class CaseController extends Controller
 
         // Buscar el análisis específico para esta carpeta usando expediente e ID_CARPETA
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
+        $crime = Crime::where('DLTO', $caseData['DELITO'] ?? null)->first();
 
         $latestAnalysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses'])
             ->where('external_case_id', $externalCaseId)
+            ->where('user_id', Auth::id() ?? 1)
+            ->when($crime, fn ($query) => $query->where('external_offense_id', $crime->ID_DLTO))
             ->latest()
             ->first();
 
@@ -75,6 +78,7 @@ class CaseController extends Controller
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
 
         $activeAnalysis = CaseAnalysis::where('external_case_id', $externalCaseId)
+            ->where('user_id', Auth::id() ?? 1)
             ->where('status', 'draft')
             ->latest()
             ->first();

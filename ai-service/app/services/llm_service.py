@@ -13,14 +13,15 @@ from pydantic import BaseModel, Field
 OLLAMA_URL = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:3b-instruct"
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
-OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "240"))
+_OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "150"))
+OLLAMA_TIMEOUT: Optional[float] = None if _OLLAMA_TIMEOUT <= 0 else _OLLAMA_TIMEOUT
 
 # 2400 era mucho más de lo que necesitan estos JSONs (cada campo de
 # texto tiene max_length=300 caracteres). Un techo más bajo reduce el
 # tiempo máximo posible por llamada en CPU sin arriesgar truncar
 # contenido real — súbelo solo si empiezas a ver done_reason=="length"
 # en los logs con contenido legítimamente cortado.
-OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "900"))
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "700"))
 
 # CRÍTICO para CPU: sin esto, Ollama decide solo cuántos hilos usar
 # dentro del contenedor y no siempre acierta con el total real
@@ -153,14 +154,24 @@ def _detectar_contenido_plantilla(analysis: dict) -> list[str]:
     return hallazgos
 
 
+def _parsear_json_respuesta(content: str) -> dict:
+    texto = content.strip()
+    try:
+        return json.loads(texto)
+    except json.JSONDecodeError:
+        inicio = texto.find("{")
+        fin = texto.rfind("}")
+        if inicio < 0 or fin <= inicio:
+            raise
+        return json.loads(texto[inicio:fin + 1])
+
+
 async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel], _retry: bool = False,
                      _call_label: str = "") -> dict:
     payload = {
         "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "system": system_prompt,
+        "prompt": user_prompt,
         "format": schema.model_json_schema(),
         "options": {
             "temperature": 0.1,
@@ -180,10 +191,10 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-                response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+                response = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
                 response.raise_for_status()
                 result = response.json()
-                content = result["message"]["content"]
+                content = result["response"]
                 done_reason = result.get("done_reason")
                 eval_count = result.get("eval_count")
                 eval_duration_s = (result.get("eval_duration") or 0) / 1e9
@@ -194,6 +205,11 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
                 status_code=502,
                 detail=f"Error en Ollama ({exc.response.status_code}): {exc.response.text}",
             )
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Ollama agotó el tiempo de respuesta en {OLLAMA_TIMEOUT}s: {str(exc)}",
+            ) from exc
         except httpx.RequestError as exc:
             if attempt == 2:
                 raise HTTPException(
@@ -227,7 +243,7 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
         )
 
     try:
-        parsed = json.loads(content)
+        parsed = _parsear_json_respuesta(content or "")
     except json.JSONDecodeError as exc:
         logger.error("[%s] Ollama devolvió JSON inválido: %s; contenido: %s", _call_label, exc, (content or "")[:2000])
         if not _retry:

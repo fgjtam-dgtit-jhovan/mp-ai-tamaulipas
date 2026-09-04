@@ -18,9 +18,9 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 3;
+    public int $tries = 1;
 
-    public int $timeout = 600;
+    public int $timeout = 1800;
 
     public function backoff(): array
     {
@@ -38,10 +38,11 @@ class ProcessCaseAnalysisJob implements ShouldQueue
         ObjectivityAuditEngine $objectivityEngine
     ): void {
         try {
+            $narrative = $this->cleanNarrative($this->factNarrative);
             $response = $aiClient->runAnalysis(
                 $this->analysis->external_case_id,
                 $this->analysis->external_offense_id,
-                $this->factNarrative,
+                $narrative,
                 $this->analysis->fact_date,
             );
 
@@ -84,9 +85,9 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
             $this->analysis->update([
                 'facts_breakdown' => [
-                    'narrative' => $this->factNarrative,
+                    'narrative' => $narrative,
                     'facts' => collect($factRows)
-                        ->map(fn(array $row): array => collect($row)->except('id_llm')->all())
+                        ->map(fn (array $row): array => collect($row)->except('id_llm')->all())
                         ->values()
                         ->all(),
                 ],
@@ -105,7 +106,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
             $hypothesisData = $hypothesisEngine->evaluate($this->analysis, $data['elements_analysis'] ?? []);
             $this->analysis->hypotheses()->delete();
             $this->analysis->hypotheses()->create($hypothesisData);
-        } catch (\UnexpectedValueException | \InvalidArgumentException $exception) {
+        } catch (\UnexpectedValueException|\InvalidArgumentException $exception) {
             $this->analysis->update([
                 'status' => 'rejected',
                 'error_message' => $exception->getMessage(),
@@ -120,8 +121,8 @@ class ProcessCaseAnalysisJob implements ShouldQueue
     private function factRows(array $facts): array
     {
         return collect($facts)
-            ->filter(fn(array $fact): bool => filled($fact['content'] ?? null))
-            ->map(fn(array $fact): array => [
+            ->filter(fn (array $fact): bool => filled($fact['content'] ?? null))
+            ->map(fn (array $fact): array => [
                 'id_llm' => $fact['id'] ?? null,
                 'information_type' => $fact['information_type'] ?? 'MANIFESTACION',
                 'content' => trim($fact['content']),
@@ -132,7 +133,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
             // unique()/values() ya no rompen nada aguas abajo: la
             // vinculación con elements_analysis se hace por id_llm,
             // no por posición dentro de este array.
-            ->unique(fn(array $fact): string => $this->normalizedKey($fact['information_type'] . '|' . $fact['content']))
+            ->unique(fn (array $fact): string => $this->normalizedKey($fact['information_type'].'|'.$fact['content']))
             ->values()
             ->all();
     }
@@ -152,12 +153,12 @@ class ProcessCaseAnalysisJob implements ShouldQueue
         $tiposConsideradosEvidencia = ['EVIDENCIA', 'TESTIMONIO', 'DATO_TECNICO'];
 
         $elementIdsPorFactId = collect($elementsAnalysis)
-            ->filter(fn(array $el): bool => ($el['supporting_fact_id'] ?? null) !== null)
+            ->filter(fn (array $el): bool => ($el['supporting_fact_id'] ?? null) !== null)
             ->groupBy('supporting_fact_id')
-            ->map(fn($group) => $group->pluck('element_id')->filter()->unique()->values()->all());
+            ->map(fn ($group) => $group->pluck('element_id')->filter()->unique()->values()->all());
 
         return $createdFacts
-            ->filter(fn(array $entry): bool => in_array($entry['model']->information_type, $tiposConsideradosEvidencia, true))
+            ->filter(fn (array $entry): bool => in_array($entry['model']->information_type, $tiposConsideradosEvidencia, true))
             ->map(function (array $entry) use ($elementIdsPorFactId): array {
                 $fact = $entry['model'];
                 $elementIds = $elementIdsPorFactId->get($entry['id_llm'], []);
@@ -188,6 +189,13 @@ class ProcessCaseAnalysisJob implements ShouldQueue
     private function normalizedKey(string $value): string
     {
         return mb_strtolower((string) preg_replace('/\s+/u', ' ', trim($value)));
+    }
+
+    private function cleanNarrative(string $narrative): string
+    {
+        $narrative = preg_replace('/^\s*DESCRIPCION_HECHOS\s*>\s*/iu', '', $narrative) ?? $narrative;
+
+        return ltrim($narrative, " \t\n\r\0\x0B,;:-");
     }
 
     public function failed(Throwable $exception): void

@@ -61,7 +61,9 @@ class CaseAnalysisController extends Controller
 
     public function show(int $id): Response
     {
-        $analysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses'])->findOrFail($id);
+        $analysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses'])
+            ->where('user_id', Auth::id() ?? 1)
+            ->findOrFail($id);
 
         return Inertia::render('CaseAnalysis/Show', [
             'analysis' => $analysis,
@@ -111,7 +113,7 @@ class CaseAnalysisController extends Controller
             'status' => 'required|string|in:draft,reviewed,approved,rejected',
         ]);
 
-        $analysis = CaseAnalysis::findOrFail($id);
+        $analysis = CaseAnalysis::where('user_id', Auth::id() ?? 1)->findOrFail($id);
 
         $analysis->update([
             'elements_status' => $validated['elements_status'],
