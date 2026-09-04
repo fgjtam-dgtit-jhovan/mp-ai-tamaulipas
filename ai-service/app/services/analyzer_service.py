@@ -35,7 +35,11 @@ async def _clasificar_hechos(narrative: str) -> list:
     1. Extrae SOLO fragmentos que aparecen literalmente en la narrativa. No agregues información.
     2. No conviertas una manifestación en un hecho probado ni en conclusión.
     3. Si la narrativa no tiene fragmentos de una clasificación, simplemente no la incluyas.
-    4. Máximo 8 hechos — prioriza los más relevantes para el caso.
+    4. Máximo 8 hechos — prioriza los más relevantes para el caso. Si varias frases de la narrativa
+       describen EL MISMO dato o el mismo objeto/lesión/evento (ej. la misma herida mencionada dos
+       veces, con distinta redacción, en distintas partes del relato), CONSOLÍDALAS en un solo hecho.
+       NUNCA generes dos o más hechos casi-idénticos que solo cambian ligeramente de redacción —
+       eso duplica evidencia artificialmente y contamina el análisis de elementos jurídicos.
     5. is_confirmed debe ser false si el propio texto trae señales de incertidumbre ("por confirmar",
        "presuntamente", "se reporta", "sin confirmar", "aparentemente" o similares) — revisa el fragmento
        completo, no solo el inicio.
@@ -81,6 +85,43 @@ async def _clasificar_hechos(narrative: str) -> list:
     return facts
 
 
+# ── Verificación: evidence_found debe coincidir con el hecho citado ─
+def _detectar_evidencia_inconsistente(elements_analysis: list, facts: list) -> list[str]:
+    """
+    Detecta cuando el modelo marca ACREDITADO/CONTRADICTORIO citando un
+    supporting_fact_id, pero evidence_found no corresponde realmente al
+    contenido de ESE hecho (por ejemplo, repite literalmente la misma
+    frase genérica para varios hechos distintos — el bug típico de un
+    modelo chico como qwen2.5:3b cuando varios elementos "suenan
+    parecido"). No exige coincidencia exacta (el modelo puede recortar
+    o puntuar distinto), pero sí que haya una relación de contención
+    real entre evidence_found y el content del hecho citado.
+    """
+    contenido_por_id = {f["id"]: (f.get("content") or "").strip().lower() for f in facts}
+    problemas = []
+
+    for el in elements_analysis:
+        if el.get("status") not in ("ACREDITADO", "CONTRADICTORIO"):
+            continue
+
+        fid = el.get("supporting_fact_id")
+        evidencia = (el.get("evidence_found") or "").strip().lower()
+        contenido = contenido_por_id.get(fid)
+
+        if contenido is None:
+            problemas.append(
+                f"element_id={el.get('element_id')}: supporting_fact_id '{fid}' no existe en la "
+                "lista de hechos entregada"
+            )
+        elif evidencia and contenido and evidencia not in contenido and contenido not in evidencia:
+            problemas.append(
+                f"element_id={el.get('element_id')}: evidence_found no coincide con el contenido "
+                f"real del hecho '{fid}'"
+            )
+
+    return problemas
+
+
 # ── FASE 1b: SOLO evaluar elementos del tipo penal ──────────────────
 async def _analizar_elementos(narrative: str, offense_name: str | None, offense_id: int,
                                elements: list, legal_context: list, legal_articles: list,
@@ -96,7 +137,9 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
     2. ACREDITADO solo si existe un hecho concreto en esa lista que cubre el elemento.
     3. CONTRADICTORIO solo si algún hecho de la lista expresa explícitamente lo contrario del elemento.
     4. FALTANTE cuando ningún hecho de la lista cubre el elemento.
-    5. evidence_found debe ser el texto EXACTO del hecho de la lista que usaste; nunca una definición legal.
+    5. evidence_found debe ser el texto EXACTO del hecho de la lista que usaste; nunca una definición
+       legal, y nunca la misma frase reciclada para hechos distintos — cada evidence_found debe
+       corresponder específicamente al content del hecho citado en supporting_fact_id.
     6. supporting_fact_id debe ser el valor EXACTO del campo "id" (ej. "f0", "f1") del hecho de la
        lista que usaste. Cada hecho en la lista trae su propio "id" — cópialo tal cual, nunca inventes
        uno nuevo. Si status es FALTANTE, deja supporting_fact_id en null.
@@ -114,8 +157,12 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
     11. PROHIBIDO ABSOLUTO: nunca escribas la palabra "FACTS", "lista de hechos", ni ningún nombre de
         variable o etiqueta técnica dentro de evidence_found o missing_reason — esos campos deben leerse
         como una oración normal sobre EL CASO, nunca mencionar la estructura de datos que estás usando.
-    12. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
-    13. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
+    12. CADA element_id debe aparecer EXACTAMENTE UNA VEZ en elements_analysis. Nunca repitas el mismo
+        element_id dos o más veces, aunque creas que varios hechos distintos lo sustentan — si hay más
+        de un hecho relevante para el mismo elemento, elige el más específico y menciona los demás solo
+        si de verdad aportan algo distinto dentro del mismo campo evidence_found.
+    13. PROHIBIDO: nunca repitas ni parafrasees las frases del EJEMPLO de abajo.
+    14. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
     '''
 
     user_prompt = f'''
@@ -157,7 +204,46 @@ async def _analizar_elementos(narrative: str, offense_name: str | None, offense_
     '''
 
     result = await query_llm(system_prompt, user_prompt, ElementsAnalysisSchema, _call_label="elementos")
-    return result["elements_analysis"]
+    elements_analysis = result["elements_analysis"]
+
+    # Verificación semántica adicional: el schema ya garantiza que no hay
+    # element_id repetidos y que los campos requeridos por status están
+    # llenos, pero NO puede validar que evidence_found realmente
+    # corresponda al hecho citado (eso requiere cruzar contra `facts`,
+    # que el schema no conoce). Hacemos ese cruce aquí y, si detectamos
+    # inconsistencias, damos UN reintento explícito antes de aceptar
+    # la respuesta tal cual.
+    problemas = _detectar_evidencia_inconsistente(elements_analysis, facts)
+    if problemas:
+        logger.warning(
+            "[elementos] evidence_found inconsistente con los hechos citados: %s — reintentando.",
+            problemas,
+        )
+        refuerzo = (
+            "\n\nADVERTENCIA: en tu respuesta anterior, evidence_found no coincidía con el "
+            f"contenido real del hecho citado en estos elementos: {'; '.join(problemas)}. "
+            "Copia el texto EXACTO (o un recorte fiel) del campo 'content' del hecho "
+            "correspondiente a supporting_fact_id. NUNCA reutilices la misma frase genérica "
+            "para hechos con id distinto — si el contenido real de ese hecho no sustenta el "
+            "elemento, marca el elemento como FALTANTE en vez de forzar una coincidencia."
+        )
+        result = await query_llm(
+            system_prompt, user_prompt + refuerzo, ElementsAnalysisSchema, _call_label="elementos"
+        )
+        elements_analysis = result["elements_analysis"]
+
+        problemas_persistentes = _detectar_evidencia_inconsistente(elements_analysis, facts)
+        if problemas_persistentes:
+            # No tronamos el análisis completo por esto — a diferencia del
+            # contenido de plantilla (que es un error puro de formato), aquí
+            # puede haber falsos positivos legítimos (paráfrasis razonable).
+            # Solo lo dejamos registrado para revisión humana en el panel.
+            logger.warning(
+                "[elementos] persisten inconsistencias evidencia/hecho tras reintento: %s",
+                problemas_persistentes,
+            )
+
+    return elements_analysis
 
 
 # ── FASE 2: auditar el resultado de fase 1b + sugerir diligencias ──

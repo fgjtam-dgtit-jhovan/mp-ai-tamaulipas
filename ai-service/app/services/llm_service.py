@@ -4,11 +4,11 @@ import json
 import logging
 import os
 import time
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import httpx
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 OLLAMA_URL = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen2.5:3b-instruct"
@@ -45,9 +45,9 @@ logger.propagate = False
 
 # ── Fase 1a: SOLO clasificación de hechos (Motor de Hechos) ────────
 class FactItem(BaseModel):
-    information_type: str = Field(
-        description="MANIFESTACION, EVIDENCIA, TESTIMONIO, DATO_TECNICO, HIPOTESIS o CONCLUSION"
-    )
+    information_type: Literal[
+        "MANIFESTACION", "EVIDENCIA", "TESTIMONIO", "DATO_TECNICO", "HIPOTESIS", "CONCLUSION"
+    ] = Field(description="Clasificación del fragmento según su naturaleza.")
     content: str = Field(max_length=300, description="Fragmento breve y fiel de la narrativa")
     source: str = Field(
         max_length=100,
@@ -59,7 +59,9 @@ class FactItem(BaseModel):
             "del hecho aquí — este campo identifica el ORIGEN, no repite el dato."
         ),
     )
-    procedural_relation: str = Field(description="cargo, descargo o neutral")
+    procedural_relation: Literal["cargo", "descargo", "neutral"] = Field(
+        description="Relación procesal del fragmento respecto al imputado."
+    )
     is_confirmed: bool = Field(
         description=(
             "false si el propio texto señala incertidumbre (ej. 'por confirmar', 'presuntamente', "
@@ -75,7 +77,9 @@ class FactsOnlySchema(BaseModel):
 # ── Fase 1b: SOLO elementos del tipo penal ──────────────────────────
 class ElementStatus(BaseModel):
     element_id: int
-    status: str = Field(description="ACREDITADO, FALTANTE o CONTRADICTORIO")
+    status: Literal["ACREDITADO", "FALTANTE", "CONTRADICTORIO"] = Field(
+        description="Estado del elemento jurídico frente a los hechos disponibles."
+    )
     evidence_found: Optional[str] = Field(None, max_length=300, description="Cita literal muy breve si está ACREDITADO")
     missing_reason: Optional[str] = Field(None, max_length=300, description="Razón breve y específica si el status es FALTANTE")
     supporting_fact_id: Optional[str] = Field(
@@ -87,9 +91,50 @@ class ElementStatus(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _consistencia_status(self) -> "ElementStatus":
+        # Refuerzo estructural de las reglas 5/6/7 del prompt: si el modelo
+        # marca ACREDITADO/CONTRADICTORIO sin evidencia real, o FALTANTE sin
+        # razón, es una respuesta incompleta — mejor forzar un reintento que
+        # persistir un elemento sin fundamento verificable (sección 5.2
+        # del anteproyecto: "no genera conclusiones sin fundamento
+        # jurídico verificable").
+        if self.status in ("ACREDITADO", "CONTRADICTORIO"):
+            if not self.evidence_found or not self.supporting_fact_id:
+                raise ValueError(
+                    f"element_id={self.element_id}: status={self.status} requiere "
+                    "evidence_found y supporting_fact_id no nulos."
+                )
+        if self.status == "FALTANTE":
+            if not self.missing_reason:
+                raise ValueError(
+                    f"element_id={self.element_id}: status=FALTANTE requiere missing_reason no nulo."
+                )
+        return self
+
 
 class ElementsAnalysisSchema(BaseModel):
     elements_analysis: List[ElementStatus]
+
+    @model_validator(mode="after")
+    def _sin_element_ids_duplicados(self) -> "ElementsAnalysisSchema":
+        # Cada elemento del tipo penal debe evaluarse UNA SOLA VEZ. Sin este
+        # chequeo, un modelo chico como qwen2.5:3b puede repetir el mismo
+        # element_id varias veces (ej. "8" tres veces con distinto
+        # supporting_fact_id) y Pydantic lo aceptaba sin más porque nada
+        # lo prohibía a nivel de schema. Al lanzar ValueError aquí,
+        # aprovechamos el mismo mecanismo de reintento que ya existe en
+        # query_llm para errores de validación (ver bloque "except Exception"
+        # más abajo), sin tocar el orquestador.
+        ids = [e.element_id for e in self.elements_analysis]
+        duplicados = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicados:
+            raise ValueError(
+                f"element_id duplicado(s) en la respuesta: {duplicados}. Cada elemento del "
+                "tipo penal debe aparecer EXACTAMENTE UNA VEZ en elements_analysis, nunca "
+                "repetido con distinto supporting_fact_id."
+            )
+        return self
 
 
 # ── Fase 2: auditoría de objetividad + diligencias ──────────────────
@@ -186,6 +231,8 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
 
     content = None
     done_reason = None
+    eval_count = None
+    eval_duration_s = 0
     inicio = time.perf_counter()
 
     for attempt in range(3):
@@ -262,6 +309,27 @@ async def query_llm(system_prompt: str, user_prompt: str, schema: type[BaseModel
     except Exception as exc:
         logger.error("[%s] Ollama devolvió una estructura inválida: %s; contenido: %s",
                       _call_label, exc, (content or "")[:2000])
+
+        if not _retry:
+            # A diferencia de antes, un fallo de validación (enum inválido,
+            # campos requeridos según el status faltantes, element_id
+            # duplicado, etc.) ahora también da pie a un reintento con el
+            # error explícito — igual de barato que el retry por contenido
+            # de plantilla, y evita tronar el análisis completo por un solo
+            # campo mal llenado.
+            return await query_llm(
+                system_prompt,
+                user_prompt + "\nIMPORTANTE: tu respuesta anterior no cumplió el formato "
+                f"requerido ({str(exc)[:300]}). Revisa que 'status' sea EXACTAMENTE uno de "
+                "ACREDITADO, FALTANTE o CONTRADICTORIO (nunca otro valor), que "
+                "evidence_found/missing_reason/supporting_fact_id estén llenos según "
+                "corresponda a cada status, y que cada element_id aparezca UNA SOLA VEZ "
+                "en toda la lista.",
+                schema,
+                _retry=True,
+                _call_label=_call_label,
+            )
+
         raise HTTPException(status_code=502, detail="El modelo devolvió una estructura JSON inválida.") from exc
 
     hallazgos = _detectar_contenido_plantilla(parsed)
