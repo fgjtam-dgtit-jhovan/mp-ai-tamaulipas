@@ -35,7 +35,13 @@ class ProcessCaseMotorJob implements ShouldQueue
         try {
             $this->markMotor('draft');
             $narrative = $this->cleanNarrative($this->factNarrative);
-            $facts = $this->analysis->facts_breakdown['facts'] ?? [];
+            $facts = collect($this->analysis->facts_breakdown['facts'] ?? [])
+                ->values()
+                ->map(fn (array $fact, int $index): array => [
+                    ...$fact,
+                    'id' => $fact['id'] ?? "f{$index}",
+                ])
+                ->all();
             $elements = $this->analysis->elements_status ?? [];
 
             if ($this->motor === 'hipotesis') {
@@ -112,14 +118,12 @@ class ProcessCaseMotorJob implements ShouldQueue
     {
         $this->analysis->evidence()
             ->where('origin', 'ia')
-            ->where('is_verified', false)
+            ->where(function ($query): void {
+                $query->where('is_verified', false)->orWhereNull('is_verified');
+            })
             ->delete();
 
         foreach ($facts as $fact) {
-            if (! in_array($fact['information_type'] ?? null, ['EVIDENCIA', 'TESTIMONIO', 'DATO_TECNICO'], true)) {
-                continue;
-            }
-
             $elementIds = collect($elements)
                 ->where('supporting_fact_id', $fact['id'] ?? null)
                 ->pluck('element_id')
@@ -128,12 +132,18 @@ class ProcessCaseMotorJob implements ShouldQueue
                 ->values()
                 ->all();
 
+            $isFormalEvidence = in_array($fact['information_type'] ?? null, ['EVIDENCIA', 'TESTIMONIO', 'DATO_TECNICO'], true);
+            if (! $isFormalEvidence && empty($elementIds)) {
+                continue;
+            }
+
             $evidence = $this->analysis->evidence()->create([
                 'offense_element_id' => $elementIds[0] ?? null,
                 'origin' => 'ia',
                 'evidence_type' => match ($fact['information_type']) {
                     'EVIDENCIA' => 'documental_o_material',
                     'TESTIMONIO' => 'testimonial',
+                    'MANIFESTACION' => 'manifestacion_narrativa',
                     default => 'pericial',
                 },
                 'source' => $fact['source'] ?? 'narrativa_de_la_carpeta',

@@ -64,7 +64,9 @@ class ProcessCaseAnalysisJob implements ShouldQueue
 
             $this->analysis->evidence()
                 ->where('origin', 'ia')
-                ->where('is_verified', false)
+                ->where(function ($query): void {
+                    $query->where('is_verified', false)->orWhereNull('is_verified');
+                })
                 ->delete();
 
             foreach ($this->evidenceRows($createdFacts, $data['elements_analysis'] ?? []) as $evidenceRow) {
@@ -87,7 +89,10 @@ class ProcessCaseAnalysisJob implements ShouldQueue
                 'facts_breakdown' => [
                     'narrative' => $narrative,
                     'facts' => collect($factRows)
-                        ->map(fn (array $row): array => collect($row)->except('id_llm')->all())
+                        ->map(fn (array $row): array => [
+                            'id' => $row['id_llm'],
+                            ...collect($row)->except('id_llm')->all(),
+                        ])
                         ->values()
                         ->all(),
                 ],
@@ -146,7 +151,8 @@ class ProcessCaseAnalysisJob implements ShouldQueue
      * posición de array — un hecho eliminado por duplicado en
      * factRows() ya no desalinea nada aguas abajo. Solo los tipos
      * EVIDENCIA, TESTIMONIO y DATO_TECNICO se convierten en registros
-     * de evidencia — una MANIFESTACION no es evidencia formal (7.2).
+    * de evidencia. Una MANIFESTACION solo se registra cuando la matriz la
+    * vinculó explícitamente con un elemento jurídico.
      */
     private function evidenceRows(Collection $createdFacts, array $elementsAnalysis): array
     {
@@ -158,7 +164,12 @@ class ProcessCaseAnalysisJob implements ShouldQueue
             ->map(fn ($group) => $group->pluck('element_id')->filter()->unique()->values()->all());
 
         return $createdFacts
-            ->filter(fn (array $entry): bool => in_array($entry['model']->information_type, $tiposConsideradosEvidencia, true))
+            ->filter(function (array $entry) use ($elementIdsPorFactId, $tiposConsideradosEvidencia): bool {
+                $fact = $entry['model'];
+
+                return in_array($fact->information_type, $tiposConsideradosEvidencia, true)
+                    || $elementIdsPorFactId->has($entry['id_llm']);
+            })
             ->map(function (array $entry) use ($elementIdsPorFactId): array {
                 $fact = $entry['model'];
                 $elementIds = $elementIdsPorFactId->get($entry['id_llm'], []);
@@ -171,6 +182,7 @@ class ProcessCaseAnalysisJob implements ShouldQueue
                     'evidence_type' => match ($fact->information_type) {
                         'EVIDENCIA' => 'documental_o_material',
                         'TESTIMONIO' => 'testimonial',
+                        'MANIFESTACION' => 'manifestacion_narrativa',
                         'DATO_TECNICO' => 'pericial',
                         default => 'hecho_narrado',
                     },
