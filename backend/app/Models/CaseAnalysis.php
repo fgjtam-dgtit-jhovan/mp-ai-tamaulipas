@@ -18,6 +18,7 @@ class CaseAnalysis extends Model
         'elements_status',
         'objectivity_audit',
         'suggested_diligences',
+        'motor_status',
         'status',
         'error_message',
     ];
@@ -27,6 +28,7 @@ class CaseAnalysis extends Model
         'elements_status' => 'array',
         'objectivity_audit' => 'array',
         'suggested_diligences' => 'array',
+        'motor_status' => 'array',
         'external_offense_id' => 'integer',
         'user_id' => 'integer',
         'fact_date' => 'date',

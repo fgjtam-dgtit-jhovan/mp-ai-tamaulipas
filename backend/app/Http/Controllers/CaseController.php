@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessCaseAnalysisJob;
+use App\Jobs\ProcessCaseMotorJob;
 use App\Models\CaseAnalysis;
 use App\Models\Ms\Crime;
 use App\Repositories\CaseRepository;
@@ -104,6 +105,51 @@ class CaseController extends Controller
         ]);
 
         ProcessCaseAnalysisJob::dispatch($analysis, $caseData['DESCRIPCION_HECHOS']);
+
+        return back();
+    }
+
+    public function runMotor(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'expediente' => 'required|string',
+            'id_carpeta' => 'required|string',
+            'motor' => 'required|string|in:hechos,matriz,objetividad,imparcialidad,diligencias,registro,hipotesis',
+        ]);
+
+        $caseData = $this->caseRepository->findByIdCarpeta($validated['expediente'], $validated['id_carpeta']);
+        if (! $caseData) {
+            return back()->withErrors(['motor' => 'No se encontró la carpeta para ejecutar este motor.']);
+        }
+
+        $crime = Crime::where('DLTO', $caseData['DELITO'] ?? null)->first();
+        if (! $crime) {
+            return back()->withErrors(['motor' => 'No se encontró el delito asociado a esta carpeta.']);
+        }
+
+        $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
+        $analysis = CaseAnalysis::firstOrCreate(
+            [
+                'external_case_id' => $externalCaseId,
+                'external_offense_id' => $crime->ID_DLTO,
+                'user_id' => Auth::id() ?? 1,
+            ],
+            [
+                'facts_breakdown' => ['narrative' => $caseData['DESCRIPCION_HECHOS'] ?? ''],
+                'status' => 'draft',
+            ]
+        );
+
+        $motorStatus = $analysis->motor_status ?? [];
+        if (($motorStatus[$validated['motor']]['status'] ?? null) === 'draft') {
+            return back()->withErrors(['motor' => 'Este motor ya está en proceso.']);
+        }
+
+        ProcessCaseMotorJob::dispatch(
+            $analysis,
+            $validated['motor'],
+            $caseData['DESCRIPCION_HECHOS'] ?? ''
+        );
 
         return back();
     }

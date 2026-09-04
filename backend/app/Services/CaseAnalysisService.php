@@ -13,6 +13,19 @@ class CaseAnalysisService
 {
     public function runAnalysis(string $externalCaseId, int $externalOffenseId, string $narrative, ?Carbon $factDate = null): array
     {
+        return $this->runMotor($externalCaseId, $externalOffenseId, $narrative, 'completo', [], [], $factDate);
+    }
+
+    public function runMotor(
+        string $externalCaseId,
+        int $externalOffenseId,
+        string $narrative,
+        string $motor,
+        array $facts = [],
+        array $elementsAnalysis = [],
+        ?Carbon $factDate = null
+    ): array
+    {
         $baseUrl = config('services.mpia_engine.url');
 
         if (empty($baseUrl)) {
@@ -25,7 +38,7 @@ class CaseAnalysisService
             ->orderBy('display_order')
             ->get();
 
-        if ($elements->isEmpty()) {
+        if ($elements->isEmpty() && $motor !== 'hechos') {
             throw new \UnexpectedValueException('El delito no tiene elementos jurídicos configurados.');
         }
 
@@ -38,6 +51,9 @@ class CaseAnalysisService
                 'offense_name' => $crime?->DLTO,
                 'fact_narrative' => $narrative,
                 'fact_date' => $factDate?->toDateString(),
+                'motor' => $motor,
+                'facts' => $facts,
+                'elements_analysis' => $elementsAnalysis,
                 'elements' => $elements->map(fn (OffenseElement $element): array => [
                     'id' => $element->id,
                     'name' => $element->name,
@@ -68,7 +84,16 @@ class CaseAnalysisService
 
         $data = $response->json('data');
 
-        if (! is_array($data) || ! isset($data['facts'], $data['elements_analysis'], $data['objectivity_audit'], $data['suggested_diligences'])) {
+        $requiredKeys = match ($motor) {
+            'hechos' => ['facts'],
+            'matriz' => ['facts', 'elements_analysis'],
+            'objetividad' => ['facts', 'elements_analysis', 'objectivity_audit', 'suggested_diligences'],
+            'imparcialidad' => ['facts', 'elements_analysis', 'objectivity_audit'],
+            'diligencias' => ['facts', 'elements_analysis', 'suggested_diligences'],
+            default => ['facts', 'elements_analysis', 'objectivity_audit', 'suggested_diligences'],
+        };
+
+        if (! is_array($data) || collect($requiredKeys)->contains(fn (string $key): bool => ! array_key_exists($key, $data))) {
             throw new \UnexpectedValueException('MP-IA Engine devolvió una respuesta incompleta.');
         }
 

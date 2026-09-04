@@ -3,7 +3,7 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Literal, Optional
 from app.services.analyzer_service import analyze_case_file
 
 
@@ -39,6 +39,9 @@ class AnalysisRequest(BaseModel):
     fact_date: Optional[str] = None
     elements: List[dict]
     legal_articles: List[dict] = Field(default_factory=list)
+    motor: Literal['completo', 'hechos', 'matriz', 'objetividad', 'imparcialidad', 'diligencias', 'registro', 'hipotesis'] = 'completo'
+    facts: List[dict] = Field(default_factory=list)
+    elements_analysis: List[dict] = Field(default_factory=list)
 
 @app.post("/api/v1/analyze-case")
 async def analyze_case(payload: AnalysisRequest):
@@ -51,6 +54,9 @@ async def analyze_case(payload: AnalysisRequest):
             elements=payload.elements,
             legal_articles=payload.legal_articles,
             fact_date=payload.fact_date,
+            motor=payload.motor,
+            facts=payload.facts,
+            elements_analysis=payload.elements_analysis,
         )
         return {"status": "success", "data": result}
     except HTTPException:

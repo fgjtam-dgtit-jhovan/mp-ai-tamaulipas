@@ -16,6 +16,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->where('expediente', '.*')
         ->name('cases.show');
     Route::post('/cases/analyze', [CaseController::class, 'analyze'])->name('cases.analyze');
+    Route::post('/cases/motor', [CaseController::class, 'runMotor'])->name('cases.motor');
 });
 
 // Route::post('/v1/cases/analyze', [CaseAnalysisController::class, 'store'])->name('case-analysis.store');

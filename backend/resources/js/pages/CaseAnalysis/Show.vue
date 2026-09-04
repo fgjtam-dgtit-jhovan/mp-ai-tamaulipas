@@ -1,10 +1,8 @@
-<script setup>
+<script setup lang="js">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Head, Link, router, useForm } from '@inertiajs/vue3';
 import {
     AlertCircle,
     ArrowLeft,
-    BrainCircuit,
     CheckCircle2,
     CircleAlert,
     FileText,
@@ -13,10 +11,9 @@ import {
     LoaderCircle,
     ListChecks,
     MapPin,
-    RefreshCw,
     Scale,
-    Sparkles,
 } from '@lucide/vue';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
 
 const props = defineProps({
     analysis: { type: Object, default: null },
@@ -37,15 +34,11 @@ const evidence = ref([]);
 const facts = ref([]);
 let pollInterval = null;
 
-const isProcessing = computed(() => currentAnalysis.value?.status === 'draft');
-const hasFailed = computed(() => currentAnalysis.value?.status === 'rejected');
-const hasResults = computed(() => currentAnalysis.value && !isProcessing.value && !hasFailed.value);
-const statusLabel = computed(() => ({
-    draft: 'Procesando',
-    reviewed: 'Análisis completado',
-    approved: 'Aprobado',
-    rejected: 'Requiere atención',
-}[currentAnalysis.value?.status] || 'Pendiente de análisis'));
+const motorStatus = computed(() => currentAnalysis.value?.motor_status || {});
+const hasProcessingMotors = computed(() => Object.values(motorStatus.value).some((motor) => motor?.status === 'draft'));
+const isAnalysisProcessing = computed(() => currentAnalysis.value?.status === 'draft');
+const isProcessing = computed(() => isAnalysisProcessing.value || hasProcessingMotors.value);
+const statusLabel = computed(() => isProcessing.value ? 'Motor en ejecución' : 'Motores disponibles');
 
 const syncReview = () => {
     elements.value = JSON.parse(JSON.stringify(currentAnalysis.value?.elements_status || []));
@@ -65,26 +58,37 @@ const stopPolling = () => {
 };
 
 const startPolling = () => {
-    if (pollInterval || !props.caseData) return;
+    if (pollInterval || !props.caseData) {
+        return;
+    }
 
     pollInterval = setInterval(() => {
         router.reload({
             only: ['latestAnalysis'],
             preserveScroll: true,
             onSuccess: () => {
-                if (currentAnalysis.value && !isProcessing.value) stopPolling();
+                if (!isProcessing.value) {
+                    stopPolling();
+                }
             },
         });
     }, 3000);
 };
 
-const triggerAnalysis = () => {
+const runMotor = (motor) => {
     form.clearErrors();
-    form.post(route('cases.analyze'), {
+    form.transform(() => ({
+        expediente: props.caseData?.EXPEDIENTE || '',
+        id_carpeta: props.caseData?.ID_CARPETA || '',
+        motor,
+    }));
+    form.post(route('cases.motor'), {
         preserveScroll: true,
         onSuccess: startPolling,
     });
 };
+
+const isMotorProcessing = (motor) => motorStatus.value[motor]?.status === 'draft';
 
 const updateElementStatus = (index, status) => {
     elements.value[index].status = status;
@@ -101,7 +105,11 @@ const saveHumanReview = () => {
         suggested_diligences: diligences.value,
         evidence: evidence.value,
         status: 'reviewed',
-    }, { onFinish: () => { isSaving.value = false; } });
+    }, {
+        onFinish: () => {
+            isSaving.value = false;
+        },
+    });
 };
 
 const getStatusBadge = (status) => ({
@@ -132,7 +140,9 @@ const hypothesisStatusClass = computed(() => ({
 
 onMounted(() => {
     syncReview();
-    if (isProcessing.value) startPolling();
+    if (isProcessing.value) {
+        startPolling();
+    }
 });
 
 onUnmounted(stopPolling);
@@ -163,30 +173,19 @@ watch(currentAnalysis, syncReview);
                     </div>
                 </div>
                 <div class="case-header__action">
-                    <span class="header-status" :class="{ 'header-status--danger': hasFailed, 'header-status--working': isProcessing }">
+                    <span class="header-status" :class="{ 'header-status--working': isProcessing }">
                         <LoaderCircle v-if="isProcessing" class="size-4 animate-spin" />
-                        <CircleAlert v-else-if="hasFailed" class="size-4" />
                         <CheckCircle2 v-else class="size-4" />
                         {{ statusLabel }}
                     </span>
-                    <button
-                        v-if="caseData && !isProcessing"
-                        type="button"
-                        class="primary-button"
-                        :disabled="form.processing"
-                        @click="triggerAnalysis"
-                    >
-                        <RefreshCw class="size-4" />
-                        {{ currentAnalysis ? 'Reanalizar' : 'Analizar carpeta' }}
-                    </button>
                 </div>
             </header>
 
-            <div v-if="form.errors.analysis || form.errors.expediente" class="request-error">
+            <div v-if="form.errors.analysis || form.errors.expediente || form.errors.motor" class="request-error">
                 <AlertCircle class="size-5 shrink-0" />
                 <div>
-                    <strong>No se pudo iniciar el análisis</strong>
-                    <p>{{ form.errors.analysis || form.errors.expediente }}</p>
+                    <strong>No se pudo ejecutar el motor</strong>
+                    <p>{{ form.errors.analysis || form.errors.expediente || form.errors.motor }}</p>
                 </div>
             </div>
 
@@ -205,33 +204,22 @@ watch(currentAnalysis, syncReview);
                 </article>
             </section>
 
-            <Transition name="fade" mode="out-in">
-                <section v-if="isProcessing" key="processing" class="state-panel state-panel--processing">
-                    <div class="processing-icon"><BrainCircuit class="size-9" /><span></span></div>
-                    <p class="state-kicker">MP-IA ENGINE · PROCESANDO</p>
-                    <h2>Analizando los hechos de la carpeta</h2>
-                    <p>Estamos contrastando la narrativa con los elementos jurídicos configurados para <strong>{{ caseData?.DELITO }}</strong>. Esta pantalla se actualizará automáticamente.</p>
-                    <div class="progress-track"><div class="progress-bar"></div></div>
-                    <div class="processing-note"><LoaderCircle class="size-4 animate-spin" /> El análisis puede tardar unos minutos</div>
-                </section>
-
-                <section v-else-if="hasFailed" key="failed" class="state-panel state-panel--failed">
-                    <div class="failed-icon"><CircleAlert class="size-7" /></div>
-                    <div class="failed-copy"><p class="state-kicker">ANÁLISIS INTERRUMPIDO</p><h2>No se pudo completar el análisis</h2><p>{{ currentAnalysis?.error_message || 'La IA no pudo procesar esta carpeta.' }}</p><button type="button" class="danger-button" @click="triggerAnalysis"><Sparkles class="size-4" /> Intentar nuevamente</button></div>
-                </section>
-
-                <section v-else-if="hasResults" key="results" class="results-section">
+            <section v-if="caseData" class="results-section">
                     <div class="results-heading"><div><p class="state-kicker">REVISIÓN MINISTERIAL</p><h2>Evaluación jurídica de la carpeta</h2></div><span class="result-confirmed"><CheckCircle2 class="size-4" /> Resultado disponible</span></div>
 
-                    <article v-if="hypothesis" class="hypothesis-summary" aria-labelledby="hypothesis-summary-title">
+                    <article v-if="caseData" class="hypothesis-summary" aria-labelledby="hypothesis-summary-title">
                         <div class="hypothesis-summary__heading">
                             <div class="result-card__heading">
                                 <span class="icon-box icon-box--green"><Gauge class="size-5" /></span>
                                 <div><p class="card-kicker">Motor de hipótesis</p><h3 id="hypothesis-summary-title">Completitud de la hipótesis</h3></div>
                             </div>
-                            <span class="hypothesis-status" :class="hypothesisStatusClass">{{ hypothesisStatusLabel }}</span>
+                            <div class="motor-heading-actions">
+                                <span v-if="isMotorProcessing('hipotesis')" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> Ejecutando</span>
+                                <button type="button" class="motor-button" :disabled="isMotorProcessing('hipotesis')" @click="runMotor('hipotesis')">{{ isMotorProcessing('hipotesis') ? 'Procesando...' : 'Analizar' }}</button>
+                                <span v-if="hypothesis" class="hypothesis-status" :class="hypothesisStatusClass">{{ hypothesisStatusLabel }}</span>
+                            </div>
                         </div>
-                        <div class="hypothesis-summary__body">
+                        <div v-if="hypothesis" class="hypothesis-summary__body">
                             <div class="hypothesis-score">
                                 <strong>{{ Number(hypothesis.completeness_percentage || 0).toFixed(2) }}%</strong>
                                 <span>elementos requeridos acreditados</span>
@@ -248,7 +236,8 @@ watch(currentAnalysis, syncReview);
                                 <div><strong>{{ hypothesis.can_conclude ? 'La hipótesis puede pasar a revisión humana' : 'No puedo concluir' }}</strong><p>{{ hypothesis.can_conclude ? 'Todos los elementos requeridos aparecen acreditados y no hay contradicciones registradas.' : 'La información disponible no permite una conclusión completa. Revise los elementos pendientes antes de continuar.' }}</p></div>
                             </div>
                         </div>
-                        <div v-if="hypothesis.missing_required_elements?.length" class="hypothesis-missing">
+                        <div v-else class="empty-result">Ejecuta la matriz jurídica antes de calcular la hipótesis.</div>
+                        <div v-if="hypothesis?.missing_required_elements?.length" class="hypothesis-missing">
                             <p><b>Elementos requeridos por revisar</b></p>
                             <ul><li v-for="item in hypothesis.missing_required_elements" :key="item.element_id"><span>{{ item.name || `Elemento #${item.element_id}` }}</span><small>{{ item.reason || (item.status === 'CONTRADICTORIO' ? 'Presenta información contradictoria.' : 'No hay información suficiente.') }}</small></li></ul>
                         </div>
@@ -256,7 +245,7 @@ watch(currentAnalysis, syncReview);
 
                     <div class="results-layout">
                         <article class="result-card result-card--elements">
-                            <div class="result-card__heading"><div><p class="card-kicker">01 · Matriz jurídica</p><h3>Elementos del tipo penal</h3></div><Gavel class="size-6 text-emerald-600" /></div>
+                            <div class="result-card__heading"><div><p class="card-kicker">01 · Análisis jurídico</p><h3>Hechos y elementos del tipo penal</h3></div><div class="motor-heading-actions"><span v-if="isMotorProcessing('matriz')" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> Ejecutando</span><button type="button" class="motor-button" :disabled="isMotorProcessing('matriz')" @click="runMotor('matriz')">{{ isMotorProcessing('matriz') ? 'Procesando hechos y matriz...' : 'Analizar hechos y matriz' }}</button><Gavel class="size-6 text-emerald-600" /></div></div>
                             <div v-if="elements.length" class="element-list">
                                 <div v-for="(element, index) in elements" :key="element.element_id || index" class="element-item" :class="{ 'element-item--alert': element.status !== 'ACREDITADO' }">
                                     <div class="element-topline"><div><span class="element-number">{{ String(index + 1).padStart(2, '0') }}</span><strong>Elemento constitutivo #{{ element.element_id }}</strong></div><span class="status-badge" :class="getStatusBadge(element.status)">{{ formatStatus(element.status) }}</span></div>
@@ -270,21 +259,21 @@ watch(currentAnalysis, syncReview);
 
                         <div class="results-sidebar">
                             <article class="result-card">
-                                <div class="result-card__heading"><div><p class="card-kicker">02 · Imparcialidad</p><h3>Auditoría de objetividad</h3></div><Scale class="size-6 text-sky-600" /></div>
+                                <div class="result-card__heading"><div><p class="card-kicker">02 · Objetividad e investigación</p><h3>Auditoría y plan de investigación</h3></div><div class="motor-heading-actions"><span v-if="isMotorProcessing('objetividad')" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> Ejecutando</span><button type="button" class="motor-button" :disabled="isMotorProcessing('objetividad')" @click="runMotor('objetividad')">{{ isMotorProcessing('objetividad') ? 'Procesando auditoría y plan...' : 'Analizar auditoría y plan' }}</button><Scale class="size-6 text-sky-600" /></div></div>
                                 <div v-if="currentAnalysis?.objectivity_audit?.bias_warning" class="bias-alert"><AlertCircle class="size-4 shrink-0" />{{ currentAnalysis.objectivity_audit.bias_warning }}</div>
                                 <div class="audit-block audit-block--charge"><h4>Elementos de cargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.cargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.cargo_elements?.length" class="muted-item">No identificados</li></ul></div>
                                 <div class="audit-block audit-block--defense"><h4>Elementos de descargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.descargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.descargo_elements?.length" class="muted-item">No identificados</li></ul></div>
                             </article>
 
                             <article class="result-card">
-                                <div class="result-card__heading"><div><p class="card-kicker">03 · Plan de investigación</p><h3>Diligencias sugeridas</h3></div><FileText class="size-6 text-amber-600" /></div>
+                                <div class="result-card__heading"><div><p class="card-kicker">Plan de investigación</p><h3>Diligencias sugeridas</h3></div><FileText class="size-6 text-amber-600" /></div>
                                 <div class="diligence-list"><div v-for="(diligence, index) in diligences" :key="index" class="diligence-item" :class="{ 'diligence-item--off': !diligence.accepted }"><div><span>{{ diligence.legal_basis }}</span><strong>{{ diligence.action }}</strong><small>{{ diligence.purpose }}</small></div><button type="button" @click="toggleDiligence(index)">{{ diligence.accepted ? 'Incluida' : 'Omitida' }}</button></div><p v-if="!diligences.length" class="empty-result">No hay diligencias sugeridas.</p></div>
                             </article>
                         </div>
                     </div>
 
                     <article class="result-card facts-card">
-                        <div class="result-card__heading"><div><p class="card-kicker">04 · Motor de hechos</p><h3>Información clasificada de la carpeta</h3></div><FileText class="size-6 text-sky-600" /></div>
+                        <div class="result-card__heading"><div><p class="card-kicker">Hechos incluidos en el análisis jurídico</p><h3>Información clasificada de la carpeta</h3></div><FileText class="size-6 text-sky-600" /></div>
                         <p class="evidence-intro">La clasificación describe la naturaleza de cada fragmento y no convierte una manifestación en un hecho probado.</p>
                         <div v-if="facts.length" class="facts-list">
                             <div v-for="(fact, index) in facts" :key="fact.id || index" class="fact-item">
@@ -297,7 +286,7 @@ watch(currentAnalysis, syncReview);
                     </article>
 
                     <article class="result-card evidence-card">
-                        <div class="result-card__heading"><div><p class="card-kicker">05 · Registro probatorio</p><h3>Motor evidencial</h3></div><FileText class="size-6 text-emerald-600" /></div>
+                        <div class="result-card__heading"><div><p class="card-kicker">03 · Registro probatorio</p><h3>Evidencia derivada de los hechos</h3></div><span class="deterministic-label">Se genera con los resultados anteriores</span><FileText class="size-6 text-emerald-600" /></div>
                         <p class="evidence-intro">La evidencia se registra como relevante potencial hasta que exista valoración ministerial.</p>
                         <div v-if="evidence.length" class="evidence-table-wrap">
                             <table class="evidence-table">
@@ -321,10 +310,7 @@ watch(currentAnalysis, syncReview);
                         <div class="final-review__copy"><p class="state-kicker">CIERRE DE LA REVISIÓN</p><h3 id="final-review-title">Consolidar revisión ministerial</h3><p>Verifique los cambios realizados en la matriz jurídica, las diligencias y el registro evidencial antes de guardar.</p></div>
                         <div class="final-review__action"><span>{{ elements.length }} elementos · {{ evidence.length }} evidencias · {{ diligences.length }} diligencias</span><button type="button" class="save-button" :disabled="isSaving" @click="saveHumanReview"><CheckCircle2 class="size-4" />{{ isSaving ? 'Guardando revisión...' : 'Guardar revisión ministerial' }}</button></div>
                     </section>
-                </section>
-
-                <section v-else key="empty" class="state-panel state-panel--empty"><div class="empty-icon"><Sparkles class="size-7" /></div><p class="state-kicker">LISTO PARA COMENZAR</p><h2>Analiza esta carpeta con MP-IA</h2><p>La evaluación utilizará los elementos jurídicos y artículos vigentes asociados al delito.</p></section>
-            </Transition>
+            </section>
         </div>
     </main>
 </template>
@@ -391,4 +377,10 @@ watch(currentAnalysis, syncReview);
 .hypothesis-missing li { display: grid; gap: 3px; padding: 9px 11px; border-left: 3px solid #e5b95e; background: #fffdf7; }.hypothesis-missing li span { color: #5a4b2d; font-size: 11px; font-weight: 800; }.hypothesis-missing li small { color: #8c7a55; font-size: 10px; line-height: 1.4; }
 @media (max-width: 900px) { .hypothesis-summary__body { grid-template-columns: 1fr 1fr; }.hypothesis-conclusion { grid-column: 1 / -1; } }
 @media (max-width: 680px) { .hypothesis-summary { padding: 18px; }.hypothesis-summary__heading { flex-direction: column; }.hypothesis-summary__body { grid-template-columns: 1fr; }.hypothesis-conclusion { grid-column: auto; }.hypothesis-missing ul { grid-template-columns: 1fr; } }
+.motor-heading-actions { display: flex; align-items: center; gap: 8px; }
+.motor-button { border: 1px solid #b8e8d4; border-radius: 6px; padding: 7px 9px; background: #effbf6; color: #168965; font-size: 10px; font-weight: 800; cursor: pointer; }
+.motor-button:hover { background: #d9f5e8; }
+.motor-button:disabled { cursor: wait; opacity: .6; }
+.motor-running { display: inline-flex; align-items: center; gap: 4px; color: #a36a0a; font-size: 10px; font-weight: 800; }
+.deterministic-label { color: #71837d; font-size: 10px; font-weight: 700; }
 </style>

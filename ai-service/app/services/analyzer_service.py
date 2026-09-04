@@ -377,21 +377,42 @@ async def analyze_case_file(
     elements: list,
     legal_articles: list,
     fact_date: str | None = None,
+    motor: str = 'completo',
+    facts: list | None = None,
+    elements_analysis: list | None = None,
 ):
-    if not elements:
+    if not elements and motor != 'hechos':
         raise ValueError(f'El delito {offense_id} no tiene elementos jurídicos configurados.')
+
+    facts = facts or await _clasificar_hechos(narrative)
+
+    if motor == 'hechos':
+        return {'facts': facts}
 
     legal_context = await search_legal_articles(query=narrative, offense_id=offense_id, limit=5, as_of_date=fact_date)
 
-    facts = await _clasificar_hechos(narrative)
-
-    elements_analysis = await _analizar_elementos(
+    elements_analysis = elements_analysis or await _analizar_elementos(
         narrative, offense_name, offense_id, elements, legal_context, legal_articles, facts
     )
+
+    if motor == 'matriz':
+        return {'facts': facts, 'elements_analysis': elements_analysis}
 
     audit_result = await _auditar_objetividad(
         narrative, offense_name, offense_id, elements_analysis, legal_context
     )
+
+    if motor == 'objetividad':
+        return {
+            'facts': facts,
+            'elements_analysis': elements_analysis,
+            'objectivity_audit': audit_result['objectivity_audit'],
+            'suggested_diligences': audit_result['suggested_diligences'],
+        }
+    if motor == 'imparcialidad':
+        return {'facts': facts, 'elements_analysis': elements_analysis, 'objectivity_audit': audit_result['objectivity_audit']}
+    if motor == 'diligencias':
+        return {'facts': facts, 'elements_analysis': elements_analysis, 'suggested_diligences': audit_result['suggested_diligences']}
 
     return {
         "facts": facts,
