@@ -141,9 +141,39 @@ class CaseController extends Controller
         );
 
         $motorStatus = $analysis->motor_status ?? [];
+        $facts = $analysis->facts_breakdown['facts'] ?? [];
+        $elementsAnalysis = $analysis->elements_status ?? [];
+        $requiresLegalFoundation = in_array($validated['motor'], ['objetividad', 'imparcialidad', 'diligencias', 'hipotesis', 'registro'], true);
+
+        if ($requiresLegalFoundation && (empty($facts) || empty($elementsAnalysis))) {
+            return back()->withErrors(['motor' => 'Primero debes completar el análisis de hechos y la matriz jurídica antes de ejecutar este módulo.']);
+        }
+
+        if (! $analysis->wasRecentlyCreated && $analysis->status === 'draft' && empty($motorStatus)) {
+            return back()->withErrors(['motor' => 'La base jurídica todavía está en proceso. Espera a que termine antes de ejecutar otro módulo.']);
+        }
+
+        $anotherMotorIsRunning = collect($motorStatus)->contains(
+            fn (array $state, string $activeMotor): bool => $activeMotor !== $validated['motor'] && ($state['status'] ?? null) === 'draft'
+        );
+        if ($anotherMotorIsRunning) {
+            return back()->withErrors(['motor' => 'Ya hay otro módulo en ejecución. Espera a que termine antes de continuar.']);
+        }
+
         if (($motorStatus[$validated['motor']]['status'] ?? null) === 'draft') {
             return back()->withErrors(['motor' => 'Este motor ya está en proceso.']);
         }
+
+        $motorStatus[$validated['motor']] = [
+            'status' => 'draft',
+            'error' => null,
+            'updated_at' => now()->toISOString(),
+        ];
+        $analysis->update([
+            'motor_status' => $motorStatus,
+            'status' => 'draft',
+            'error_message' => null,
+        ]);
 
         ProcessCaseMotorJob::dispatch(
             $analysis,

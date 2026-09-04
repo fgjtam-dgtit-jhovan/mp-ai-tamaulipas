@@ -1,19 +1,17 @@
 <script setup lang="js">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
 import {
     AlertCircle,
     ArrowLeft,
     CheckCircle2,
-    CircleAlert,
     FileText,
     Gauge,
     Gavel,
     LoaderCircle,
     ListChecks,
-    MapPin,
     Scale,
 } from '@lucide/vue';
-import { Head, Link, router, useForm } from '@inertiajs/vue3';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 const props = defineProps({
     analysis: { type: Object, default: null },
@@ -32,13 +30,31 @@ const elements = ref([]);
 const diligences = ref([]);
 const evidence = ref([]);
 const facts = ref([]);
+const requestedMotor = ref(null);
 let pollInterval = null;
 
 const motorStatus = computed(() => currentAnalysis.value?.motor_status || {});
 const hasProcessingMotors = computed(() => Object.values(motorStatus.value).some((motor) => motor?.status === 'draft'));
-const isAnalysisProcessing = computed(() => currentAnalysis.value?.status === 'draft');
-const isProcessing = computed(() => isAnalysisProcessing.value || hasProcessingMotors.value);
+const isAnalysisProcessing = computed(() => currentAnalysis.value?.status === 'draft' && Object.keys(motorStatus.value).length === 0);
+const hasServerProcessing = computed(() => isAnalysisProcessing.value || hasProcessingMotors.value);
+const isProcessing = computed(() => hasServerProcessing.value || requestedMotor.value !== null);
 const statusLabel = computed(() => isProcessing.value ? 'Motor en ejecución' : 'Motores disponibles');
+const hasObjectiveResults = computed(() => Boolean(currentAnalysis.value?.objectivity_audit) || diligences.value.length > 0);
+const hasLegalFoundation = computed(() => facts.value.length > 0 && elements.value.length > 0);
+
+const moduleStatus = (motor, hasResults = false) => {
+    if (isMotorProcessing(motor) || (motor === 'matriz' && isAnalysisProcessing.value)) {
+        return 'working';
+    }
+
+    return hasResults ? 'ready' : 'pending';
+};
+
+const moduleStatusLabel = (motor, hasResults = false) => ({
+    working: 'En ejecución',
+    ready: 'Disponible',
+    pending: motor === 'hipotesis' ? 'Pendiente de matriz' : 'Pendiente',
+}[moduleStatus(motor, hasResults)]);
 
 const syncReview = () => {
     elements.value = JSON.parse(JSON.stringify(currentAnalysis.value?.elements_status || []));
@@ -67,7 +83,8 @@ const startPolling = () => {
             only: ['latestAnalysis'],
             preserveScroll: true,
             onSuccess: () => {
-                if (!isProcessing.value) {
+                if (!hasServerProcessing.value) {
+                    requestedMotor.value = null;
                     stopPolling();
                 }
             },
@@ -76,6 +93,11 @@ const startPolling = () => {
 };
 
 const runMotor = (motor) => {
+    if (isProcessing.value) {
+        return;
+    }
+
+    requestedMotor.value = motor;
     form.clearErrors();
     form.transform(() => ({
         expediente: props.caseData?.EXPEDIENTE || '',
@@ -85,10 +107,14 @@ const runMotor = (motor) => {
     form.post(route('cases.motor'), {
         preserveScroll: true,
         onSuccess: startPolling,
+        onError: () => {
+            requestedMotor.value = null;
+        },
     });
 };
 
-const isMotorProcessing = (motor) => motorStatus.value[motor]?.status === 'draft';
+const isMotorProcessing = (motor) => motorStatus.value[motor]?.status === 'draft' || requestedMotor.value === motor;
+const isAnotherMotorProcessing = (motor) => isProcessing.value && !isMotorProcessing(motor);
 
 const updateElementStatus = (index, status) => {
     elements.value[index].status = status;
@@ -140,12 +166,14 @@ const hypothesisStatusClass = computed(() => ({
 
 onMounted(() => {
     syncReview();
+
     if (isProcessing.value) {
         startPolling();
     }
 });
 
 onUnmounted(stopPolling);
+
 watch(currentAnalysis, syncReview);
 </script>
 
@@ -171,6 +199,11 @@ watch(currentAnalysis, syncReview);
                         <span v-if="caseData?.DELITO">{{ caseData.DELITO }}</span>
                         <span v-if="caseData?.MODALIDAD">{{ caseData.MODALIDAD }}</span>
                     </div>
+                    <dl class="case-header__details">
+                        <div><dt>Estado</dt><dd>{{ caseData?.ESTADO || 'No disponible' }}</dd></div>
+                        <div><dt>Unidad</dt><dd>{{ caseData?.UNIDAD || 'No disponible' }}</dd></div>
+                        <div><dt>Municipio</dt><dd>{{ caseData?.MUNICIPIO || 'No disponible' }}</dd></div>
+                    </dl>
                 </div>
                 <div class="case-header__action">
                     <span class="header-status" :class="{ 'header-status--working': isProcessing }">
@@ -194,20 +227,81 @@ watch(currentAnalysis, syncReview);
                     <div class="section-heading"><span class="icon-box icon-box--green"><FileText class="size-5" /></span><div><p>Información de la carpeta</p><h2>Narrativa de los hechos</h2></div></div>
                     <p class="narrative-text">{{ caseData?.DESCRIPCION_HECHOS || currentAnalysis?.facts_breakdown?.narrative || 'No hay narrativa registrada.' }}</p>
                 </article>
-                <article class="overview-card overview-card--facts">
-                    <div class="section-heading"><span class="icon-box icon-box--slate"><MapPin class="size-5" /></span><div><p>Referencia operativa</p><h2>Datos de ubicación</h2></div></div>
-                    <dl class="fact-list">
-                        <div><dt>Estado</dt><dd>{{ caseData?.ESTADO || 'No disponible' }}</dd></div>
-                        <div><dt>Unidad</dt><dd>{{ caseData?.UNIDAD || 'No disponible' }}</dd></div>
-                        <div><dt>Municipio</dt><dd>{{ caseData?.MUNICIPIO || 'No disponible' }}</dd></div>
-                    </dl>
-                </article>
             </section>
 
-            <section v-if="caseData" class="results-section">
+            <section v-if="caseData" class="institutional-results">
+                <header class="institutional-results__header">
+                    <div>
+                        <p class="state-kicker">REVISIÓN MINISTERIAL</p>
+                        <h2>Ruta de análisis de la carpeta</h2>
+                        <p>Flujo obligatorio: hechos y matriz, auditoría y plan, hipótesis y registro de evidencia.</p>
+                    </div>
+                    <span class="result-confirmed"><CheckCircle2 class="size-4" /> {{ isProcessing ? 'Análisis en curso' : 'Vista consolidada' }}</span>
+                </header>
+
+                <section class="institutional-module institutional-module--legal" aria-labelledby="module-legal-title">
+                    <div class="institutional-module__header">
+                        <div class="institutional-module__identity"><span class="institutional-module__number">01</span><div><p class="state-kicker">BASE DEL ANÁLISIS</p><h2 id="module-legal-title">Hechos y matriz jurídica</h2><p>La narrativa se clasifica y se contrasta con cada elemento del tipo penal.</p></div></div>
+                        <button type="button" class="module-action" :disabled="isAnotherMotorProcessing('matriz') || isAnalysisProcessing" @click="runMotor('matriz')"><LoaderCircle v-if="isMotorProcessing('matriz') || isAnalysisProcessing" class="size-4 animate-spin" />{{ isMotorProcessing('matriz') || isAnalysisProcessing ? 'Procesando análisis jurídico' : 'Analizar hechos y matriz' }}</button>
+                    </div>
+                    <div class="institutional-module__grid institutional-module__grid--legal">
+                        <article class="institutional-panel">
+                            <div class="institutional-panel__heading"><div><p class="card-kicker">01-A · Hechos clasificados</p><h3>Información de la narrativa</h3></div><FileText class="size-5 text-sky-600" /></div>
+                            <div v-if="moduleStatus('matriz') === 'working'" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Clasificando la narrativa</strong><span>Identificando manifestaciones, testimonios, evidencia y datos técnicos.</span></div></div>
+                            <div v-else-if="facts.length" class="facts-list"><div v-for="(fact, index) in facts" :key="fact.id || index" class="fact-item"><div class="fact-item__heading"><span class="fact-type">{{ fact.information_type }}</span><span class="fact-relation">{{ fact.procedural_relation }}</span></div><p>{{ fact.content }}</p><small>Origen: {{ fact.source }}</small></div></div>
+                            <div v-else class="institutional-empty">Los hechos aparecerán al ejecutar el análisis jurídico.</div>
+                        </article>
+                        <article class="institutional-panel">
+                            <div class="institutional-panel__heading"><div><p class="card-kicker">01-B · Elementos del tipo penal</p><h3>Matriz de acreditación</h3></div><Gavel class="size-5 text-emerald-600" /></div>
+                            <div v-if="moduleStatus('matriz') === 'working'" class="module-loading"><div class="loading-orbit"><LoaderCircle class="size-6 animate-spin" /></div><div><strong>Construyendo la matriz jurídica</strong><span>Relacionando cada elemento con los hechos disponibles.</span></div><div class="loading-line"><span></span></div></div>
+                            <div v-else-if="elements.length" class="element-list"><div v-for="(element, index) in elements" :key="element.element_id || index" class="element-item" :class="{ 'element-item--alert': element.status !== 'ACREDITADO' }"><div class="element-topline"><div><span class="element-number">{{ String(index + 1).padStart(2, '0') }}</span><strong>Elemento #{{ element.element_id }}</strong></div><span class="status-badge" :class="getStatusBadge(element.status)">{{ formatStatus(element.status) }}</span></div><p v-if="element.evidence_found" class="evidence"><b>Evidencia:</b> {{ element.evidence_found }}</p><p v-if="element.missing_reason" class="missing"><b>Qué falta:</b> {{ element.missing_reason }}</p><div class="element-actions"><span>Dictamen ministerial</span><button type="button" :class="{ active: element.status === 'ACREDITADO' }" @click="updateElementStatus(index, 'ACREDITADO')">Acreditar</button><button type="button" :class="{ active: element.status === 'FALTANTE' }" @click="updateElementStatus(index, 'FALTANTE')">Faltante</button></div></div></div>
+                            <div v-else class="institutional-empty">La matriz se habilitará después de analizar los hechos.</div>
+                        </article>
+                    </div>
+                </section>
+
+                <section class="institutional-module institutional-module--objectivity" aria-labelledby="module-objectivity-title">
+                    <div class="institutional-module__header">
+                        <div class="institutional-module__identity"><span class="institutional-module__number">02</span><div><p class="state-kicker">VALORACIÓN MINISTERIAL</p><h2 id="module-objectivity-title">Auditoría y plan de investigación</h2><p>Una misma revisión identifica sesgos y propone diligencias para los elementos pendientes.</p></div></div>
+                        <div class="module-action-wrap"><span v-if="!hasLegalFoundation" class="module-dependency">Requiere hechos y matriz terminados</span><button type="button" class="module-action" :disabled="isAnotherMotorProcessing('objetividad') || isAnalysisProcessing || !hasLegalFoundation" @click="runMotor('objetividad')"><LoaderCircle v-if="isMotorProcessing('objetividad')" class="size-4 animate-spin" />{{ isMotorProcessing('objetividad') ? 'Procesando valoración' : 'Analizar auditoría y plan' }}</button></div>
+                    </div>
+                    <div class="institutional-module__grid institutional-module__grid--objectivity">
+                        <article class="institutional-panel"><div class="institutional-panel__heading"><div><p class="card-kicker">02-A · Auditoría de objetividad</p><h3>Contraste de cargo y descargo</h3></div><Scale class="size-5 text-sky-600" /></div><div v-if="isMotorProcessing('objetividad')" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Revisando objetividad</strong><span>La auditoría se genera junto con el plan de investigación.</span></div></div><template v-else><div v-if="currentAnalysis?.objectivity_audit?.bias_warning" class="bias-alert"><AlertCircle class="size-4 shrink-0" />{{ currentAnalysis.objectivity_audit.bias_warning }}</div><div class="audit-block audit-block--charge"><h4>Elementos de cargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.cargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.cargo_elements?.length" class="muted-item">No identificados</li></ul></div><div class="audit-block audit-block--defense"><h4>Elementos de descargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.descargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.descargo_elements?.length" class="muted-item">No identificados</li></ul></div></template></article>
+                        <article class="institutional-panel"><div class="institutional-panel__heading"><div><p class="card-kicker">02-B · Plan de investigación</p><h3>Diligencias sugeridas</h3></div><FileText class="size-5 text-amber-600" /></div><div v-if="isMotorProcessing('objetividad')" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Preparando diligencias</strong><span>Seleccionando acciones para los elementos pendientes.</span></div></div><div v-else-if="diligences.length" class="diligence-list"><div v-for="(diligence, index) in diligences" :key="index" class="diligence-item" :class="{ 'diligence-item--off': !diligence.accepted }"><div><span>{{ diligence.legal_basis }}</span><strong>{{ diligence.action }}</strong><small>{{ diligence.purpose }}</small></div><button type="button" @click="toggleDiligence(index)">{{ diligence.accepted ? 'Incluida' : 'Omitida' }}</button></div></div><div v-else class="institutional-empty">Las diligencias aparecerán después de ejecutar la auditoría.</div></article>
+                    </div>
+                </section>
+
+                <section class="institutional-module institutional-module--hypothesis" aria-labelledby="module-hypothesis-title">
+                    <div class="institutional-module__header"><div class="institutional-module__identity"><span class="institutional-module__number">03</span><div><p class="state-kicker">SÍNTESIS JURÍDICA</p><h2 id="module-hypothesis-title">Hipótesis de trabajo</h2><p>Resume la completitud de los elementos requeridos sin realizar otra llamada al modelo.</p></div></div><div class="module-action-wrap"><span v-if="!hasLegalFoundation" class="module-dependency">Requiere hechos y matriz terminados</span><button type="button" class="module-action" :disabled="isAnotherMotorProcessing('hipotesis') || isAnalysisProcessing || !hasLegalFoundation" @click="runMotor('hipotesis')"><LoaderCircle v-if="isMotorProcessing('hipotesis')" class="size-4 animate-spin" />{{ isMotorProcessing('hipotesis') ? 'Calculando hipótesis' : 'Calcular hipótesis' }}</button></div></div>
+                    <article class="hypothesis-summary"><div class="hypothesis-summary__heading"><div class="result-card__heading"><span class="icon-box icon-box--green"><Gauge class="size-5" /></span><div><p class="card-kicker">Resultado de completitud</p><h3>¿La carpeta permite concluir?</h3></div></div><span v-if="hypothesis" class="hypothesis-status" :class="hypothesisStatusClass">{{ hypothesisStatusLabel }}</span></div><div v-if="hypothesis" class="hypothesis-summary__body"><div class="hypothesis-score"><strong>{{ Number(hypothesis.completeness_percentage || 0).toFixed(2) }}%</strong><span>elementos requeridos acreditados</span><div class="hypothesis-progress" role="progressbar" :aria-valuenow="hypothesis.completeness_percentage || 0" aria-valuemin="0" aria-valuemax="100"><span :style="{ width: `${Math.min(100, Math.max(0, Number(hypothesis.completeness_percentage || 0)))}%` }"></span></div></div><div class="hypothesis-metrics"><div><strong>{{ hypothesis.accredited_count }}</strong><span>Acreditados</span></div><div><strong>{{ hypothesis.missing_count }}</strong><span>Faltantes</span></div><div><strong>{{ hypothesis.contradictory_count }}</strong><span>Contradictorios</span></div><div><strong>{{ hypothesis.required_elements }}</strong><span>Requeridos</span></div></div><div class="hypothesis-conclusion" :class="{ 'hypothesis-conclusion--warning': !hypothesis.can_conclude }"><ListChecks class="size-5 shrink-0" /><div><strong>{{ hypothesis.can_conclude ? 'Puede pasar a revisión humana' : 'Información insuficiente' }}</strong><p>{{ hypothesis.can_conclude ? 'Los elementos requeridos aparecen acreditados y no hay contradicciones registradas.' : 'Revise los elementos pendientes antes de continuar.' }}</p></div></div></div><div v-else-if="isMotorProcessing('hipotesis')" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Calculando completitud</strong><span>Comparando los elementos requeridos de la matriz.</span></div></div><div v-else class="institutional-empty">Ejecute la matriz jurídica antes de calcular la hipótesis.</div><div v-if="hypothesis?.missing_required_elements?.length" class="hypothesis-missing"><p><b>Elementos requeridos por revisar</b></p><ul><li v-for="item in hypothesis.missing_required_elements" :key="item.element_id"><span>{{ item.name || `Elemento #${item.element_id}` }}</span><small>{{ item.reason || 'No hay información suficiente.' }}</small></li></ul></div></article>
+                </section>
+
+                <section class="institutional-module institutional-module--evidence" aria-labelledby="module-evidence-title">
+                    <div class="institutional-module__header"><div class="institutional-module__identity"><span class="institutional-module__number">04</span><div><p class="state-kicker">SOPORTE DOCUMENTAL</p><h2 id="module-evidence-title">Registro de evidencia</h2><p>Se construye con los hechos y elementos ya analizados; no requiere otra llamada al modelo.</p></div></div><span class="deterministic-label">Derivado del análisis jurídico</span></div>
+                    <article class="institutional-panel"><div class="institutional-panel__heading"><div><p class="card-kicker">04-A · Registro probatorio</p><h3>Elementos para revisión ministerial</h3></div><FileText class="size-5 text-emerald-600" /></div><div v-if="moduleStatus('matriz') === 'working'" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Preparando el registro</strong><span>Esperando la relación entre hechos y elementos jurídicos.</span></div></div><div v-else-if="evidence.length" class="evidence-table-wrap"><table class="evidence-table"><thead><tr><th>Tipo y origen</th><th>Fecha</th><th>Hecho relacionado</th><th>Autenticidad</th><th>Valoración</th><th>Relación</th></tr></thead><tbody><tr v-for="item in evidence" :key="item.id"><td><input v-model="item.evidence_type" aria-label="Tipo de evidencia" /><input v-model="item.source" aria-label="Origen de evidencia" /></td><td><input v-model="item.evidence_date" type="date" aria-label="Fecha de evidencia" /></td><td><textarea v-model="item.related_fact" rows="3" aria-label="Hecho relacionado"></textarea></td><td><select v-model="item.authenticity_status" aria-label="Estado de autenticidad"><option value="pendiente">Pendiente</option><option value="autentica">Auténtica</option><option value="no_autentica">No auténtica</option><option value="por_verificar">Por verificar</option></select></td><td><select v-model="item.valuation_status" aria-label="Estado de valoración"><option value="pendiente">Pendiente</option><option value="relevante">Relevante</option><option value="no_relevante">No relevante</option><option value="valorada">Valorada</option></select></td><td><select v-model="item.procedural_relation" aria-label="Relación procesal"><option value="cargo">Cargo</option><option value="descargo">Descargo</option><option value="neutral">Neutral</option></select></td></tr></tbody></table></div><div v-else class="institutional-empty">El registro se generará cuando concluya el análisis jurídico.</div></article>
+                </section>
+
+                <section class="final-review institutional-final" aria-labelledby="final-review-title"><div class="final-review__copy"><p class="state-kicker">CIERRE DE LA REVISIÓN</p><h3 id="final-review-title">Consolidar revisión ministerial</h3><p>Verifique los cambios realizados antes de guardar la revisión.</p></div><div class="final-review__action"><span>{{ elements.length }} elementos · {{ evidence.length }} evidencias · {{ diligences.length }} diligencias</span><button type="button" class="save-button" :disabled="isSaving" @click="saveHumanReview"><CheckCircle2 class="size-4" />{{ isSaving ? 'Guardando revisión...' : 'Guardar revisión ministerial' }}</button></div></section>
+            </section>
+
+            <section v-if="caseData" class="results-section legacy-results" aria-hidden="true">
                     <div class="results-heading"><div><p class="state-kicker">REVISIÓN MINISTERIAL</p><h2>Evaluación jurídica de la carpeta</h2></div><span class="result-confirmed"><CheckCircle2 class="size-4" /> Resultado disponible</span></div>
 
-                    <article v-if="caseData" class="hypothesis-summary" aria-labelledby="hypothesis-summary-title">
+                    <nav class="module-roadmap" aria-label="Flujo de análisis">
+                        <div class="roadmap-step roadmap-step--active"><span>01</span><div><strong>Base jurídica</strong><small>Hechos y matriz</small></div></div>
+                        <div class="roadmap-connector"></div>
+                        <div class="roadmap-step" :class="{ 'roadmap-step--active': hasObjectiveResults, 'roadmap-step--working': isMotorProcessing('objetividad') }"><span>02</span><div><strong>Objetividad</strong><small>Auditoría y diligencias</small></div></div>
+                        <div class="roadmap-connector"></div>
+                        <div class="roadmap-step" :class="{ 'roadmap-step--active': hypothesis, 'roadmap-step--working': isMotorProcessing('hipotesis') }"><span>03</span><div><strong>Hipótesis</strong><small>Revisión de completitud</small></div></div>
+                        <div class="roadmap-connector"></div>
+                        <div class="roadmap-step" :class="{ 'roadmap-step--active': evidence.length, 'roadmap-step--working': isAnalysisProcessing }"><span>04</span><div><strong>Registro</strong><small>Evidencia derivada</small></div></div>
+                    </nav>
+
+                    <div class="module-heading module-heading--foundation"><div><p class="state-kicker">MÓDULO 01</p><h2>Base jurídica de la carpeta</h2></div><span class="module-heading__note">Una llamada obtiene los hechos y evalúa los elementos</span></div>
+
+                    <section class="module-group module-group--hypothesis">
+                        <div class="module-heading"><div><p class="state-kicker">MÓDULO 03</p><h2>Hipótesis de trabajo</h2></div><span class="module-heading__note">Cálculo local sobre la matriz, sin nueva llamada al modelo</span></div>
+                        <article v-if="caseData" class="hypothesis-summary" aria-labelledby="hypothesis-summary-title">
                         <div class="hypothesis-summary__heading">
                             <div class="result-card__heading">
                                 <span class="icon-box icon-box--green"><Gauge class="size-5" /></span>
@@ -236,17 +330,20 @@ watch(currentAnalysis, syncReview);
                                 <div><strong>{{ hypothesis.can_conclude ? 'La hipótesis puede pasar a revisión humana' : 'No puedo concluir' }}</strong><p>{{ hypothesis.can_conclude ? 'Todos los elementos requeridos aparecen acreditados y no hay contradicciones registradas.' : 'La información disponible no permite una conclusión completa. Revise los elementos pendientes antes de continuar.' }}</p></div>
                             </div>
                         </div>
+                        <div v-else-if="moduleStatus('hipotesis') === 'working'" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Calculando completitud</strong><span>Estamos comparando los elementos requeridos.</span></div></div>
                         <div v-else class="empty-result">Ejecuta la matriz jurídica antes de calcular la hipótesis.</div>
                         <div v-if="hypothesis?.missing_required_elements?.length" class="hypothesis-missing">
                             <p><b>Elementos requeridos por revisar</b></p>
                             <ul><li v-for="item in hypothesis.missing_required_elements" :key="item.element_id"><span>{{ item.name || `Elemento #${item.element_id}` }}</span><small>{{ item.reason || (item.status === 'CONTRADICTORIO' ? 'Presenta información contradictoria.' : 'No hay información suficiente.') }}</small></li></ul>
                         </div>
-                    </article>
+                        </article>
+                    </section>
 
                     <div class="results-layout">
                         <article class="result-card result-card--elements">
-                            <div class="result-card__heading"><div><p class="card-kicker">01 · Análisis jurídico</p><h3>Hechos y elementos del tipo penal</h3></div><div class="motor-heading-actions"><span v-if="isMotorProcessing('matriz')" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> Ejecutando</span><button type="button" class="motor-button" :disabled="isMotorProcessing('matriz')" @click="runMotor('matriz')">{{ isMotorProcessing('matriz') ? 'Procesando hechos y matriz...' : 'Analizar hechos y matriz' }}</button><Gavel class="size-6 text-emerald-600" /></div></div>
-                            <div v-if="elements.length" class="element-list">
+                            <div class="result-card__heading"><div><p class="card-kicker">01 · Análisis jurídico</p><h3>Hechos y elementos del tipo penal</h3></div><div class="motor-heading-actions"><span v-if="isMotorProcessing('matriz') || isAnalysisProcessing" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> {{ moduleStatusLabel('matriz', elements.length) }}</span><button type="button" class="motor-button" :disabled="isMotorProcessing('matriz') || isAnalysisProcessing" @click="runMotor('matriz')">{{ isMotorProcessing('matriz') || isAnalysisProcessing ? 'Procesando hechos y matriz...' : 'Analizar hechos y matriz' }}</button><Gavel class="size-6 text-emerald-600" /></div></div>
+                            <div v-if="moduleStatus('matriz') === 'working'" class="module-loading"><div class="loading-orbit"><LoaderCircle class="size-6 animate-spin" /></div><div><strong>Construyendo la matriz jurídica</strong><span>Clasificando hechos y contrastándolos con los elementos del tipo penal.</span></div><div class="loading-line"><span></span></div></div>
+                            <div v-else-if="elements.length" class="element-list">
                                 <div v-for="(element, index) in elements" :key="element.element_id || index" class="element-item" :class="{ 'element-item--alert': element.status !== 'ACREDITADO' }">
                                     <div class="element-topline"><div><span class="element-number">{{ String(index + 1).padStart(2, '0') }}</span><strong>Elemento constitutivo #{{ element.element_id }}</strong></div><span class="status-badge" :class="getStatusBadge(element.status)">{{ formatStatus(element.status) }}</span></div>
                                     <p v-if="element.evidence_found" class="evidence"><b>Evidencia:</b> {{ element.evidence_found }}</p>
@@ -259,23 +356,26 @@ watch(currentAnalysis, syncReview);
 
                         <div class="results-sidebar">
                             <article class="result-card">
-                                <div class="result-card__heading"><div><p class="card-kicker">02 · Objetividad e investigación</p><h3>Auditoría y plan de investigación</h3></div><div class="motor-heading-actions"><span v-if="isMotorProcessing('objetividad')" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> Ejecutando</span><button type="button" class="motor-button" :disabled="isMotorProcessing('objetividad')" @click="runMotor('objetividad')">{{ isMotorProcessing('objetividad') ? 'Procesando auditoría y plan...' : 'Analizar auditoría y plan' }}</button><Scale class="size-6 text-sky-600" /></div></div>
-                                <div v-if="currentAnalysis?.objectivity_audit?.bias_warning" class="bias-alert"><AlertCircle class="size-4 shrink-0" />{{ currentAnalysis.objectivity_audit.bias_warning }}</div>
+                                <div class="result-card__heading"><div><p class="card-kicker">02 · Objetividad e investigación</p><h3>Auditoría y plan de investigación</h3></div><div class="motor-heading-actions"><span v-if="isMotorProcessing('objetividad')" class="motor-running"><LoaderCircle class="size-3 animate-spin" /> {{ moduleStatusLabel('objetividad', hasObjectiveResults) }}</span><button type="button" class="motor-button" :disabled="isMotorProcessing('objetividad')" @click="runMotor('objetividad')">{{ isMotorProcessing('objetividad') ? 'Procesando auditoría y plan...' : 'Analizar auditoría y plan' }}</button><Scale class="size-6 text-sky-600" /></div></div>
+                                <div v-if="moduleStatus('objetividad', hasObjectiveResults) === 'working'" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Revisando objetividad</strong><span>La auditoría y las diligencias se generan en la misma llamada.</span></div></div>
+                                <template v-else><div v-if="currentAnalysis?.objectivity_audit?.bias_warning" class="bias-alert"><AlertCircle class="size-4 shrink-0" />{{ currentAnalysis.objectivity_audit.bias_warning }}</div>
                                 <div class="audit-block audit-block--charge"><h4>Elementos de cargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.cargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.cargo_elements?.length" class="muted-item">No identificados</li></ul></div>
-                                <div class="audit-block audit-block--defense"><h4>Elementos de descargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.descargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.descargo_elements?.length" class="muted-item">No identificados</li></ul></div>
+                                <div class="audit-block audit-block--defense"><h4>Elementos de descargo</h4><ul><li v-for="(item, index) in currentAnalysis?.objectivity_audit?.descargo_elements || []" :key="index">{{ item }}</li><li v-if="!currentAnalysis?.objectivity_audit?.descargo_elements?.length" class="muted-item">No identificados</li></ul></div></template>
                             </article>
 
                             <article class="result-card">
                                 <div class="result-card__heading"><div><p class="card-kicker">Plan de investigación</p><h3>Diligencias sugeridas</h3></div><FileText class="size-6 text-amber-600" /></div>
-                                <div class="diligence-list"><div v-for="(diligence, index) in diligences" :key="index" class="diligence-item" :class="{ 'diligence-item--off': !diligence.accepted }"><div><span>{{ diligence.legal_basis }}</span><strong>{{ diligence.action }}</strong><small>{{ diligence.purpose }}</small></div><button type="button" @click="toggleDiligence(index)">{{ diligence.accepted ? 'Incluida' : 'Omitida' }}</button></div><p v-if="!diligences.length" class="empty-result">No hay diligencias sugeridas.</p></div>
+                                <div v-if="isMotorProcessing('objetividad')" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Preparando diligencias</strong><span>Seleccionando acciones para los elementos pendientes.</span></div></div><div v-else class="diligence-list"><div v-for="(diligence, index) in diligences" :key="index" class="diligence-item" :class="{ 'diligence-item--off': !diligence.accepted }"><div><span>{{ diligence.legal_basis }}</span><strong>{{ diligence.action }}</strong><small>{{ diligence.purpose }}</small></div><button type="button" @click="toggleDiligence(index)">{{ diligence.accepted ? 'Incluida' : 'Omitida' }}</button></div><p v-if="!diligences.length" class="empty-result">No hay diligencias sugeridas.</p></div>
                             </article>
                         </div>
                     </div>
 
+                    <div class="module-heading module-heading--compact module-heading--facts"><div><p class="state-kicker">Detalle de la base jurídica</p><h2>Hechos utilizados</h2></div><span class="module-heading__note">Los hechos alimentan la matriz y el registro probatorio</span></div>
                     <article class="result-card facts-card">
                         <div class="result-card__heading"><div><p class="card-kicker">Hechos incluidos en el análisis jurídico</p><h3>Información clasificada de la carpeta</h3></div><FileText class="size-6 text-sky-600" /></div>
                         <p class="evidence-intro">La clasificación describe la naturaleza de cada fragmento y no convierte una manifestación en un hecho probado.</p>
-                        <div v-if="facts.length" class="facts-list">
+                        <div v-if="moduleStatus('matriz') === 'working'" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Clasificando la narrativa</strong><span>Separando manifestaciones, testimonios, evidencia y datos técnicos.</span></div></div>
+                        <div v-else-if="facts.length" class="facts-list">
                             <div v-for="(fact, index) in facts" :key="fact.id || index" class="fact-item">
                                 <div class="fact-item__heading"><span class="fact-type">{{ fact.information_type }}</span><span class="fact-relation">{{ fact.procedural_relation }}</span></div>
                                 <p>{{ fact.content }}</p>
@@ -285,10 +385,12 @@ watch(currentAnalysis, syncReview);
                         <div v-else class="empty-result">No hay hechos clasificados en este análisis.</div>
                     </article>
 
+                    <div class="module-heading module-heading--compact module-heading--evidence"><div><p class="state-kicker">MÓDULO 04</p><h2>Registro probatorio</h2></div><span class="module-heading__note">Se construye automáticamente a partir del análisis jurídico</span></div>
                     <article class="result-card evidence-card">
                         <div class="result-card__heading"><div><p class="card-kicker">03 · Registro probatorio</p><h3>Evidencia derivada de los hechos</h3></div><span class="deterministic-label">Se genera con los resultados anteriores</span><FileText class="size-6 text-emerald-600" /></div>
                         <p class="evidence-intro">La evidencia se registra como relevante potencial hasta que exista valoración ministerial.</p>
-                        <div v-if="evidence.length" class="evidence-table-wrap">
+                        <div v-if="moduleStatus('matriz') === 'working'" class="module-loading module-loading--compact"><LoaderCircle class="size-5 animate-spin" /><div><strong>Preparando el registro probatorio</strong><span>Esperando la relación entre hechos y elementos jurídicos.</span></div></div>
+                        <div v-else-if="evidence.length" class="evidence-table-wrap">
                             <table class="evidence-table">
                                 <thead><tr><th>Tipo y origen</th><th>Fecha</th><th>Hecho relacionado</th><th>Autenticidad</th><th>Valoración</th><th>Relación</th></tr></thead>
                                 <tbody>
@@ -383,4 +485,35 @@ watch(currentAnalysis, syncReview);
 .motor-button:disabled { cursor: wait; opacity: .6; }
 .motor-running { display: inline-flex; align-items: center; gap: 4px; color: #a36a0a; font-size: 10px; font-weight: 800; }
 .deterministic-label { color: #71837d; font-size: 10px; font-weight: 700; }
+.module-roadmap { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; padding: 15px 18px; border: 1px solid #dce7e2; border-radius: 14px; background: #fff; }
+.roadmap-step { display: flex; align-items: center; gap: 9px; min-width: 0; color: #9aa9a4; }
+.roadmap-step > span { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border: 1px solid #d9e4df; border-radius: 50%; font-size: 10px; font-weight: 900; }
+.roadmap-step div { display: grid; gap: 2px; }.roadmap-step strong, .roadmap-step small { white-space: nowrap; }.roadmap-step strong { font-size: 11px; }.roadmap-step small { font-size: 10px; }.roadmap-step--active { color: #168965; }.roadmap-step--active > span { border-color: #8eddbb; background: #effbf5; }.roadmap-step--working { color: #a36a0a; }.roadmap-step--working > span { border-color: #f0d59e; background: #fff9e9; }.roadmap-connector { height: 1px; min-width: 18px; flex: 1; background: #dce7e2; }
+.module-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin: 28px 0 13px; }.module-heading h2 { margin: 0; color: #1d332c; font-size: 20px; letter-spacing: -.02em; }.module-heading__note { color: #71837d; font-size: 11px; text-align: right; }.module-heading--compact { margin-top: 28px; }
+.results-section { display: flex; flex-direction: column; }.results-heading { order: 1; }.module-roadmap { order: 2; }.module-heading--foundation { order: 3; }.results-layout { order: 4; }.module-group--hypothesis { order: 5; }.module-heading--facts { order: 6; }.facts-card { order: 7; }.module-heading--evidence { order: 8; }.evidence-card { order: 9; }.final-review { order: 10; }.module-group { width: 100%; }
+.module-loading { display: grid; gap: 13px; min-height: 220px; align-content: center; justify-items: center; padding: 24px; border: 1px dashed #b9dfcf; border-radius: 12px; background: linear-gradient(135deg, #f4fcf8, #fbfdfc); color: #168965; text-align: center; }.module-loading > div:not(.loading-orbit):not(.loading-line) { display: grid; gap: 5px; }.module-loading strong { color: #245448; font-size: 13px; }.module-loading span { color: #71837d; font-size: 11px; line-height: 1.5; }.module-loading--compact { display: flex; min-height: 92px; align-content: initial; justify-items: initial; justify-content: flex-start; padding: 16px; text-align: left; }.loading-orbit { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid #9edfc3; border-radius: 50%; background: #e8f9f0; }.loading-line { width: min(260px, 90%); height: 5px; overflow: hidden; border-radius: 99px; background: #dcece5; }.loading-line span { display: block; width: 38%; height: 100%; border-radius: inherit; background: #29b984; animation: loading 1.8s ease-in-out infinite; }
+@media (max-width: 780px) { .module-roadmap { align-items: stretch; flex-direction: column; gap: 9px; }.roadmap-connector { width: 1px; height: 10px; min-width: 0; margin-left: 14px; }.module-heading { align-items: flex-start; flex-direction: column; gap: 6px; }.module-heading__note { text-align: left; } }
+@media (max-width: 680px) { .case-header__details { grid-template-columns: 1fr; gap: 11px; margin-top: 20px; padding-top: 15px; } }
+.legacy-results { display: none !important; }
+.case-header__details { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); gap: 16px; max-width: 760px; margin: 24px 0 0; padding-top: 18px; border-top: 1px solid rgba(181, 203, 197, .2); }.case-header__details div { display: grid; gap: 5px; }.case-header__details dt { color: #8eaaa1; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }.case-header__details dd { margin: 0; color: #f1faf6; font-size: 13px; font-weight: 700; }
+.overview-grid { grid-template-columns: minmax(0, 1fr); }.overview-card--narrative { width: 100%; }
+.institutional-results { display: grid; gap: 22px; margin-top: 28px; }
+.institutional-results__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding-bottom: 4px; }.institutional-results__header h2 { margin: 0; color: #18372e; font-size: 28px; letter-spacing: -.03em; }.institutional-results__header p:not(.state-kicker) { margin: 7px 0 0; color: #71837d; font-size: 13px; }
+.institutional-module { overflow: hidden; border: 1px solid #d7e5df; border-radius: 16px; background: #fff; box-shadow: 0 8px 24px rgba(36, 69, 60, .05); }.institutional-module--legal { border-top: 4px solid #168965; }.institutional-module--objectivity { border-top: 4px solid #287fa1; }.institutional-module--hypothesis { border-top: 4px solid #bc8a28; }.institutional-module--evidence { border-top: 4px solid #4f7d69; }
+.institutional-module__header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 25px 27px 22px; background: #fbfdfc; }.institutional-module__identity { display: flex; align-items: flex-start; gap: 15px; }.institutional-module__number { display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: #e8f6ef; color: #147452; font-size: 13px; font-weight: 900; }.institutional-module--objectivity .institutional-module__number { background: #eaf6fa; color: #287fa1; }.institutional-module--hypothesis .institutional-module__number { background: #fff7e7; color: #a4731d; }.institutional-module--evidence .institutional-module__number { background: #edf5f0; color: #4f7d69; }.institutional-module__header h2 { margin: 0; color: #1d332c; font-size: 20px; letter-spacing: -.02em; }.institutional-module__header p:not(.state-kicker) { margin: 5px 0 0; color: #71837d; font-size: 12px; line-height: 1.5; }.module-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: 0 0 auto; border: 1px solid #168965; border-radius: 7px; padding: 10px 13px; background: #168965; color: #fff; font-size: 11px; font-weight: 800; cursor: pointer; }.module-action:hover { background: #0f704f; }.module-action:disabled { cursor: wait; opacity: .65; }
+.institutional-module__grid { display: grid; gap: 1px; padding: 1px; background: #dce7e2; }.institutional-module__grid--legal, .institutional-module__grid--objectivity { grid-template-columns: repeat(2, minmax(0, 1fr)); }.institutional-panel { min-width: 0; padding: 24px; background: #fff; }.institutional-panel__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 17px; }.institutional-panel__heading h3 { margin: 0; color: #1e3930; font-size: 16px; }.institutional-panel__heading .card-kicker { margin-bottom: 5px; }.institutional-empty { display: grid; min-height: 100px; place-items: center; padding: 20px; border: 1px dashed #c9ddd4; border-radius: 9px; background: #f8fbf9; color: #81938c; font-size: 12px; text-align: center; }.institutional-panel .module-loading { min-height: 170px; }
+.institutional-module--hypothesis .hypothesis-summary { margin: 0; border: 0; border-radius: 0; background: #fffdf8; }.institutional-module--evidence .institutional-panel { padding-top: 22px; }.institutional-final { margin-top: 0; }
+.institutional-module--evidence .module-loading { display: flex; min-height: 100px; border-style: solid; background: #f8fbf9; color: #81938c; }.institutional-module--evidence .module-loading > svg, .institutional-module--evidence .module-loading > div { display: none; }.institutional-module--evidence .module-loading::after { content: 'Pendiente del análisis jurídico'; font-size: 12px; font-weight: 700; }
+@media (max-width: 820px) { .institutional-results__header, .institutional-module__header { align-items: flex-start; flex-direction: column; }.module-action { width: 100%; }.institutional-module__grid--legal, .institutional-module__grid--objectivity { grid-template-columns: 1fr; } }
+.case-header { align-items: start; padding: 25px 30px; }.case-header__content { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; }.case-header__content .eyebrow, .case-header__content h1 { grid-column: 1 / -1; }.case-header__content h1 { margin: 8px 0 12px; }.case-header__meta { align-self: center; }.case-header__details { grid-template-columns: repeat(3, minmax(100px, 1fr)); gap: 14px; max-width: none; margin: 0; padding: 0 0 0 20px; border-top: 0; border-left: 1px solid rgba(181, 203, 197, .2); }
+@media (max-width: 680px) { .case-header { padding: 23px 22px; }.case-header__content { display: block; width: 100%; }.case-header__details { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; padding: 14px 0 0; border-top: 1px solid rgba(181, 203, 197, .2); border-left: 0; }.case-header__action { width: 100%; margin-top: 18px; align-items: flex-start; } }
+@media (max-width: 520px) { .case-header__details { grid-template-columns: 1fr; gap: 9px; } }
+.case-header__content { min-width: 0; }.case-header__action { padding-top: 1px; }.case-header__details { padding: 12px 16px; border: 1px solid rgba(123, 221, 185, .18); border-radius: 10px; background: rgba(255, 255, 255, .045); }.case-header__details dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-card--narrative { border-top: 3px solid #69d9ae; }.narrative-text { max-height: 220px; overflow-y: auto; scrollbar-color: #b8dacc transparent; }
+.institutional-module__header { background: linear-gradient(90deg, #fbfdfc 0%, #f5faf7 100%); }.institutional-module__header h2 { font-size: 21px; }.institutional-module__number { box-shadow: 0 0 0 5px rgba(232, 246, 239, .75); }.module-action { min-height: 38px; box-shadow: 0 4px 10px rgba(22, 137, 101, .16); }.module-action:focus-visible, .motor-button:focus-visible, .save-button:focus-visible { outline: 3px solid rgba(103, 224, 180, .35); outline-offset: 2px; }
+.module-action-wrap { display: grid; justify-items: end; gap: 7px; }.module-dependency { color: #a4731d; font-size: 10px; font-weight: 700; text-align: right; }.module-action:disabled { box-shadow: none; }
+.analysis-page { background: linear-gradient(180deg, #f7faf8 0%, #edf3f0 100%); font-family: var(--font-sans), 'Instrument Sans', sans-serif; }.analysis-shell { width: min(1320px, calc(100% - 56px)); padding-top: 24px; }.case-header { border: 1px solid rgba(135, 190, 169, .18); border-radius: 16px; background: linear-gradient(118deg, #102a24 0%, #173b31 68%, #1d4a3b 100%); box-shadow: 0 20px 46px rgba(22, 57, 47, .16); }.case-header__content h1 { font-size: clamp(28px, 3.4vw, 40px); letter-spacing: -.02em; }.header-status { background: rgba(255, 255, 255, .06); backdrop-filter: blur(8px); }
+.overview-card, .institutional-module, .result-card { border-radius: 12px; box-shadow: 0 10px 28px rgba(29, 61, 51, .055); }.overview-card { padding: 27px 29px; }.narrative-text { border-left-width: 2px; background: #f8fbf9; color: #40584f; font-size: 13px; }
+.institutional-results { gap: 26px; }.institutional-results__header { padding: 3px 2px 7px; }.institutional-results__header h2 { color: #173a30; font-size: 30px; font-weight: 700; }.institutional-results__header p:not(.state-kicker) { color: #6f817a; }.institutional-module { border-radius: 13px; box-shadow: 0 12px 32px rgba(29, 61, 51, .06); }.institutional-module__header { padding: 22px 25px; }.institutional-module__identity { gap: 14px; }.institutional-module__number { width: 38px; height: 38px; border-radius: 9px; box-shadow: none; font-size: 11px; }.institutional-module__header h2 { font-size: 19px; }.institutional-module__header p:not(.state-kicker) { max-width: 650px; }.institutional-panel { padding: 26px; }.institutional-panel__heading { padding-bottom: 13px; border-bottom: 1px solid #edf2ef; }.institutional-panel__heading h3 { font-size: 15px; }.module-action { border-radius: 6px; padding: 9px 13px; font-size: 10px; letter-spacing: .02em; }
+.fact-item, .element-item, .diligence-item { border-radius: 7px; }.fact-item { background: #fcfdfc; }.element-item { background: #fff; }.institutional-empty { background: #fbfcfb; }.final-review { border-radius: 12px; box-shadow: 0 10px 26px rgba(29, 61, 51, .045); }
 </style>
