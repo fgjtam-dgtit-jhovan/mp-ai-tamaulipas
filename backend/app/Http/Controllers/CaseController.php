@@ -7,6 +7,7 @@ use App\Jobs\ProcessCaseMotorJob;
 use App\Models\CaseAnalysis;
 use App\Models\Ms\Crime;
 use App\Repositories\CaseRepository;
+use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -49,7 +50,7 @@ class CaseController extends Controller
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
         $crime = Crime::where('DLTO', $caseData['DELITO'] ?? null)->first();
 
-        $latestAnalysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses'])
+        $latestAnalysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses', 'audits.user'])
             ->where('external_case_id', $externalCaseId)
             ->where('user_id', Auth::id() ?? 1)
             ->when($crime, fn ($query) => $query->where('external_offense_id', $crime->ID_DLTO))
@@ -77,6 +78,7 @@ class CaseController extends Controller
         }
 
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
+        $factDate = $this->factDate($caseData);
 
         $activeAnalysis = CaseAnalysis::where('external_case_id', $externalCaseId)
             ->where('user_id', Auth::id() ?? 1)
@@ -98,7 +100,7 @@ class CaseController extends Controller
             'external_case_id' => $externalCaseId,
             'external_offense_id' => $crime->ID_DLTO,
             'user_id' => Auth::id() ?? 1,
-            'fact_date' => null,
+            'fact_date' => $factDate?->toDateString(),
             'facts_breakdown' => ['narrative' => $caseData['DESCRIPCION_HECHOS'] ?? ''],
             'status' => 'draft',
             'error_message' => null,
@@ -128,6 +130,7 @@ class CaseController extends Controller
         }
 
         $externalCaseId = "{$caseData['EXPEDIENTE']}-{$caseData['ID_CARPETA']}";
+        $factDate = $this->factDate($caseData);
         $analysis = CaseAnalysis::firstOrCreate(
             [
                 'external_case_id' => $externalCaseId,
@@ -135,10 +138,17 @@ class CaseController extends Controller
                 'user_id' => Auth::id() ?? 1,
             ],
             [
+                'fact_date' => $factDate?->toDateString(),
                 'facts_breakdown' => ['narrative' => $caseData['DESCRIPCION_HECHOS'] ?? ''],
                 'status' => 'draft',
             ]
         );
+
+        if ($factDate && ! $analysis->fact_date) {
+            $analysis->update([
+                'fact_date' => $factDate->toDateString(),
+            ]);
+        }
 
         $motorStatus = $analysis->motor_status ?? [];
         $facts = $analysis->facts_breakdown['facts'] ?? [];
@@ -182,5 +192,16 @@ class CaseController extends Controller
         );
 
         return back();
+    }
+
+    private function factDate(array $caseData): ?Carbon
+    {
+        $value = $caseData['FECHA_HECHO'] ?? null;
+
+        if (blank($value)) {
+            return null;
+        }
+
+        return Carbon::parse($value);
     }
 }

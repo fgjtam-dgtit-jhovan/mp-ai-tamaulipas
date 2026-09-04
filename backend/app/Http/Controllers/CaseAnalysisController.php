@@ -3,9 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessCaseAnalysisJob;
+use App\Http\Requests\UpdateCaseAnalysisRequest;
 use App\Models\CaseAnalysis;
 use App\Repositories\CaseRepository;
+use App\Services\CaseAnalysisAuditService;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -15,7 +18,8 @@ use Inertia\Response;
 class CaseAnalysisController extends Controller
 {
     public function __construct(
-        protected CaseRepository $caseRepository
+        protected CaseRepository $caseRepository,
+        protected CaseAnalysisAuditService $auditService,
     ) {}
 
     public function index(Request $request): Response
@@ -61,7 +65,7 @@ class CaseAnalysisController extends Controller
 
     public function show(int $id): Response
     {
-        $analysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses'])
+        $analysis = CaseAnalysis::with(['evidence', 'facts', 'hypotheses', 'audits.user'])
             ->where('user_id', Auth::id() ?? 1)
             ->findOrFail($id);
 
@@ -76,12 +80,14 @@ class CaseAnalysisController extends Controller
             'external_case_id' => 'required|string',
             'external_offense_id' => 'required|integer',
             'fact_narrative' => 'required|string|min:10',
+            'fact_date' => 'nullable|date',
         ]);
 
         $analysis = CaseAnalysis::create([
             'external_case_id' => $validated['external_case_id'],
             'external_offense_id' => $validated['external_offense_id'],
             'user_id' => Auth::id() ?? 1,
+            'fact_date' => $validated['fact_date'] ?? null,
             'facts_breakdown' => ['narrative' => $validated['fact_narrative']],
             'status' => 'draft',
             'error_message' => null,
@@ -96,34 +102,30 @@ class CaseAnalysisController extends Controller
         ], 202);
     }
 
-    public function update(Request $request, int $id)
+    public function update(UpdateCaseAnalysisRequest $request, int $id): RedirectResponse
     {
-        $validated = $request->validate([
-            'elements_status' => 'required|array',
-            'suggested_diligences' => 'required|array',
-            'evidence' => 'sometimes|array',
-            'evidence.*.id' => 'required|integer|exists:case_evidence,id',
-            'evidence.*.evidence_type' => 'required|string|max:100',
-            'evidence.*.source' => 'required|string|max:255',
-            'evidence.*.evidence_date' => 'nullable|date',
-            'evidence.*.related_fact' => 'required|string',
-            'evidence.*.authenticity_status' => 'required|string|in:pendiente,autentica,no_autentica,por_verificar',
-            'evidence.*.valuation_status' => 'required|string|in:pendiente,relevante,no_relevante,valorada',
-            'evidence.*.procedural_relation' => 'required|string|in:cargo,descargo,neutral',
-            'status' => 'required|string|in:draft,reviewed,approved,rejected',
-        ]);
+        $validated = $request->validated();
 
-        $analysis = CaseAnalysis::where('user_id', Auth::id() ?? 1)->findOrFail($id);
+        $analysis = CaseAnalysis::with('evidence')
+            ->where('user_id', Auth::id() ?? 1)
+            ->findOrFail($id);
+
+        $before = [
+            'elements_status' => $analysis->elements_status ?? [],
+            'suggested_diligences' => $analysis->suggested_diligences ?? [],
+            'evidence' => $analysis->evidence,
+            'status' => $analysis->status,
+        ];
 
         $analysis->update([
             'elements_status' => $validated['elements_status'],
             'suggested_diligences' => $validated['suggested_diligences'],
             'status' => $validated['status'],
-            'user_id' => Auth::id() ?? $analysis->user_id ?? 1,
         ]);
 
         foreach ($validated['evidence'] ?? [] as $evidence) {
-            $analysis->evidence()->whereKey($evidence['id'])->update([
+            $caseEvidence = $analysis->evidence()->findOrFail($evidence['id']);
+            $caseEvidence->update([
                 'evidence_type' => $evidence['evidence_type'],
                 'source' => $evidence['source'],
                 'evidence_date' => $evidence['evidence_date'] ?? null,
@@ -137,6 +139,13 @@ class CaseAnalysisController extends Controller
                 'reviewed_at' => now(),
             ]);
         }
+
+        $this->auditService->recordHumanReview(
+            $analysis,
+            Auth::id() ?? $analysis->user_id,
+            $before,
+            $validated,
+        );
 
         return redirect()->back()->with('success', 'Revisión ministerial actualizada correctamente.');
     }

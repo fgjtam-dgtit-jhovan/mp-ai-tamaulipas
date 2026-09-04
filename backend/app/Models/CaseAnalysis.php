@@ -53,4 +53,9 @@ class CaseAnalysis extends Model
     {
         return $this->hasMany(CaseHypothesis::class, 'case_analysis_id');
     }
+
+    public function audits(): HasMany
+    {
+        return $this->hasMany(CaseAnalysisAudit::class, 'case_analysis_id')->latest();
+    }
 }
